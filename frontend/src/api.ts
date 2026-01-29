@@ -70,3 +70,64 @@ export async function getSummary(projectId: string): Promise<{
   }
   return res.json();
 }
+
+export async function askProject(projectId: string, question: string): Promise<{
+  project_id: string;
+  question: string;
+  answer: string;
+  confidence: number;
+  created_at: string;
+}> {
+  const res = await fetch(`${API_BASE}/projects/${projectId}/ask`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question }),
+  });
+  if (!res.ok) {
+    throw new Error("Failed to submit question");
+  }
+  return res.json();
+}
+
+export async function getQaLog(projectId: string): Promise<{
+  project_id: string;
+  entries: Array<{
+    question: string;
+    answer: string;
+    evidence: Array<{
+      paragraph_index?: string;
+      page?: string;
+      text_excerpt?: string;
+      paragraph_confidence?: number;
+      kind?: string;
+      path?: string;
+      name?: string;
+      line?: string;
+      score?: number;
+      matched_tokens?: string[];
+      excerpt?: string;
+    }>;
+    confidence: number;
+    created_at: string;
+  }>;
+}> {
+  const res = await fetch(`${API_BASE}/projects/${projectId}/qa`);
+  if (!res.ok) {
+    throw new Error("Failed to load QA log");
+  }
+  return res.json();
+}
+
+export async function indexCode(projectId: string): Promise<{
+  project_id: string;
+  repo_hash: string;
+  index_path: string;
+}> {
+  const res = await fetch(`${API_BASE}/projects/${projectId}/code-index`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    throw new Error("Failed to index code");
+  }
+  return res.json();
+}

@@ -25,9 +25,35 @@ class ProjectOut(BaseModel):
 
 class ProjectDetail(ProjectOut):
     paper_parsed_path: Optional[str] = None
+    code_index_path: Optional[str] = None
+    alignment_path: Optional[str] = None
 
 
 class IngestResponse(BaseModel):
     project_id: str
     paper_hash: str
     parsed_path: str
+
+
+class CodeIndexResponse(BaseModel):
+    project_id: str
+    repo_hash: str
+    index_path: str
+
+
+class AlignmentResponse(BaseModel):
+    project_id: str
+    alignment_path: str
+    match_count: int
+
+
+class AskRequest(BaseModel):
+    question: str = Field(..., min_length=1)
+
+
+class AskResponse(BaseModel):
+    project_id: str
+    question: str
+    answer: str
+    confidence: float
+    created_at: datetime

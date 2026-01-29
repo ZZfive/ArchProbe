@@ -24,10 +24,20 @@ def init_db() -> None:
                 updated_at TEXT NOT NULL,
                 paper_hash TEXT,
                 repo_hash TEXT,
-                paper_parsed_path TEXT
+                paper_parsed_path TEXT,
+                code_index_path TEXT,
+                alignment_path TEXT
             );
             """
         )
+        try:
+            conn.execute("ALTER TABLE projects ADD COLUMN code_index_path TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE projects ADD COLUMN alignment_path TEXT")
+        except sqlite3.OperationalError:
+            pass
         conn.commit()
     finally:
         conn.close()

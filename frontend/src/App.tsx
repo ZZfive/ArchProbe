@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  askProject,
   createProject,
   getProject,
+  getQaLog,
   getSummary,
+  indexCode,
   ingestProject,
   listProjects,
   Project,
@@ -15,6 +18,23 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [summary, setSummary] = useState<SummaryState>({ text: "" });
+  const [qaLog, setQaLog] = useState<
+    Array<{
+      question: string;
+      answer: string;
+      created_at: string;
+      evidence?: Array<{
+        kind?: string;
+        path?: string;
+        name?: string;
+        line?: string;
+        score?: number;
+        paragraph_confidence?: number;
+        excerpt?: string;
+      }>;
+    }>
+  >([]);
+  const [question, setQuestion] = useState("");
   const [loading, setLoading] = useState(false);
   const [form, setForm] = useState({ name: "", paper_url: "", repo_url: "", focus_points: "" });
   const [error, setError] = useState<string | null>(null);
@@ -41,13 +61,15 @@ export default function App() {
     if (!selectedId) {
       setSelectedProject(null);
       setSummary({ text: "" });
+      setQaLog([]);
       return;
     }
     setLoading(true);
-    Promise.all([getProject(selectedId), getSummary(selectedId)])
-      .then(([project, summaryResp]) => {
+    Promise.all([getProject(selectedId), getSummary(selectedId), getQaLog(selectedId)])
+      .then(([project, summaryResp, qaResp]) => {
         setSelectedProject(project);
         setSummary({ text: summaryResp.summary || "" });
+        setQaLog(qaResp.entries || []);
       })
       .catch((err) => {
         setError(err.message);
@@ -83,8 +105,48 @@ export default function App() {
       await ingestProject(selectedId);
       const project = await getProject(selectedId);
       const summaryResp = await getSummary(selectedId);
+      const qaResp = await getQaLog(selectedId);
       setSelectedProject(project);
       setSummary({ text: summaryResp.summary || "" });
+      setQaLog(qaResp.entries || []);
+    } catch (err) {
+      if (err instanceof Error) {
+        setError(err.message);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleIndexCode() {
+    if (!selectedId) return;
+    setLoading(true);
+    setError(null);
+    try {
+      await indexCode(selectedId);
+      const project = await getProject(selectedId);
+      setSelectedProject(project);
+    } catch (err) {
+      if (err instanceof Error) {
+        setError(err.message);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleAsk(e: React.FormEvent) {
+    e.preventDefault();
+    if (!selectedId || !question.trim()) return;
+    setLoading(true);
+    setError(null);
+    try {
+      await askProject(selectedId, question.trim());
+      const summaryResp = await getSummary(selectedId);
+      const qaResp = await getQaLog(selectedId);
+      setSummary({ text: summaryResp.summary || "" });
+      setQaLog(qaResp.entries || []);
+      setQuestion("");
     } catch (err) {
       if (err instanceof Error) {
         setError(err.message);
@@ -172,9 +234,14 @@ export default function App() {
           <section className="card">
             <div className="card-header">
               <h2>Project Detail</h2>
-              <button className="ghost" onClick={handleIngest} disabled={!selectedId || loading}>
-                {loading ? "Working..." : "Ingest paper"}
-              </button>
+              <div className="button-row">
+                <button className="ghost" onClick={handleIngest} disabled={!selectedId || loading}>
+                  {loading ? "Working..." : "Ingest paper"}
+                </button>
+                <button className="ghost" onClick={handleIndexCode} disabled={!selectedId || loading}>
+                  {loading ? "Working..." : "Index code"}
+                </button>
+              </div>
             </div>
             {selectedProject ? (
               <div className="detail-grid">
@@ -194,6 +261,10 @@ export default function App() {
                   <p className="label">Paper hash</p>
                   <p className="mono">{selectedProject.paper_hash || "-"}</p>
                 </div>
+                <div>
+                  <p className="label">Repo hash</p>
+                  <p className="mono">{selectedProject.repo_hash || "-"}</p>
+                </div>
               </div>
             ) : (
               <p className="empty">Select a project to view details.</p>
@@ -204,6 +275,53 @@ export default function App() {
             <h2>Project Summary</h2>
             <div className="summary">
               {summary.text ? <pre>{summary.text}</pre> : <p className="empty">No summary yet.</p>}
+            </div>
+          </section>
+
+          <section className="card">
+            <h2>Ask a Question</h2>
+            <form className="form" onSubmit={handleAsk}>
+              <label>
+                Question
+                <input
+                  value={question}
+                  onChange={(e) => setQuestion(e.target.value)}
+                  placeholder="What positional encoding is used and why?"
+                />
+              </label>
+              <button type="submit" className="primary" disabled={!selectedId || loading}>
+                {loading ? "Working..." : "Submit question"}
+              </button>
+            </form>
+            <div className="qa-log">
+              {qaLog.length === 0 && <p className="empty">No questions yet.</p>}
+              {qaLog.map((entry, index) => (
+                <div className="qa-entry" key={`${entry.created_at}-${index}`}>
+                  <p className="label">Q</p>
+                  <p>{entry.question}</p>
+                  <p className="label">A</p>
+                  <p>{entry.answer}</p>
+                  {entry.evidence && entry.evidence.length > 0 && (
+                    <div className="qa-evidence">
+                      <p className="label">Evidence</p>
+                      <ul>
+                        {entry.evidence.slice(0, 3).map((ev, evIndex) => (
+                          <li key={`${ev.path}-${evIndex}`}>
+                            <span className="mono">{ev.path || "unknown"}</span>
+                            {ev.name ? ` :: ${ev.name}` : ""}
+                            {ev.line ? ` (L${ev.line})` : ""}
+                            {typeof ev.score === "number" ? ` score ${ev.score}` : ""}
+                            {typeof ev.paragraph_confidence === "number"
+                              ? ` conf ${ev.paragraph_confidence.toFixed(2)}`
+                              : ""}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  <p className="qa-time">{new Date(entry.created_at).toLocaleString()}</p>
+                </div>
+              ))}
             </div>
           </section>
 

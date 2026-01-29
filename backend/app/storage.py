@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, List
 
 from .config import PROJECTS_DIR
 
@@ -37,3 +37,25 @@ def append_project_summary(project_id: str, lines: Iterable[str]) -> None:
     with summary_path.open("a", encoding="utf-8") as handle:
         handle.write(content)
         handle.write("\n")
+
+
+def append_qa_log(project_id: str, entry: dict) -> None:
+    log_path = PROJECTS_DIR / project_id / "qa" / "qa_log.jsonl"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry, ensure_ascii=True))
+        handle.write("\n")
+
+
+def read_qa_log(project_id: str) -> List[dict]:
+    log_path = PROJECTS_DIR / project_id / "qa" / "qa_log.jsonl"
+    if not log_path.exists():
+        return []
+    entries = []
+    with log_path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            entries.append(json.loads(line))
+    return entries
