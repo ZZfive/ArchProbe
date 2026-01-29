@@ -1,0 +1,76 @@
+############################
+# Python
+############################
+
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Build / distribution
+build/
+dist/
+*.egg-info/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Tool caches
+.ruff_cache/
+.mypy_cache/
+
+############################
+# Frontend (Web / Node)
+############################
+
+# Dependencies
+node_modules/
+.pnpm-store/
+.yarn/cache/
+
+# Build output
+dist/
+build/
+.out/
+.next/
+.nuxt/
+.svelte-kit/
+.vite/
+.parcel-cache/
+
+# Frontend logs
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+*.log
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Cache
+.cache/
+.eslintcache/
+
+############################
+# Tooling / Editors
+############################
+
+.vscode/
+.idea/
+*.swp
+*.swo
+
+############################
+# OS junk
+############################
+
+.DS_Store
+Thumbs.db

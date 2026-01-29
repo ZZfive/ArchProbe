@@ -1,0 +1,33 @@
+from datetime import datetime
+from typing import List, Optional
+
+from pydantic import BaseModel, Field
+
+
+class ProjectCreate(BaseModel):
+    name: str = Field(..., min_length=1)
+    paper_url: str = Field(..., min_length=1)
+    repo_url: str = Field(..., min_length=1)
+    focus_points: Optional[List[str]] = None
+
+
+class ProjectOut(BaseModel):
+    id: str
+    name: str
+    paper_url: str
+    repo_url: str
+    focus_points: Optional[List[str]] = None
+    created_at: datetime
+    updated_at: datetime
+    paper_hash: Optional[str] = None
+    repo_hash: Optional[str] = None
+
+
+class ProjectDetail(ProjectOut):
+    paper_parsed_path: Optional[str] = None
+
+
+class IngestResponse(BaseModel):
+    project_id: str
+    paper_hash: str
+    parsed_path: str
