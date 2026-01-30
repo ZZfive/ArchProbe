@@ -16,6 +16,7 @@ import {
 type SummaryState = { text: string; error?: string };
 
 export default function App() {
+  const [lang, setLang] = useState<"zh" | "en">("zh");
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
@@ -40,6 +41,87 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [form, setForm] = useState({ name: "", paper_url: "", repo_url: "", focus_points: "" });
   const [error, setError] = useState<string | null>(null);
+
+  const copy = {
+    zh: {
+      eyebrow: "\u8bba\u6587\u4ee3\u7801\u5bf9\u7167",
+      title: "\u9879\u76ee\u5de5\u4f5c\u53f0",
+      projects: "\u9879\u76ee",
+      create: "\u521b\u5efa\u9879\u76ee",
+      projectName: "\u9879\u76ee\u540d\u79f0",
+      paperUrl: "\u8bba\u6587\u94fe\u63a5",
+      repoUrl: "GitHub \u94fe\u63a5",
+      focusPoints: "\u5173\u6ce8\u70b9\uff08\u9017\u53f7\u5206\u9694\uff09",
+      createBtn: "\u521b\u5efa\u9879\u76ee",
+      detail: "\u9879\u76ee\u8be6\u60c5",
+      ingest: "\u89e3\u6790\u8bba\u6587",
+      indexCode: "\u7d22\u5f15\u4ee3\u7801",
+      align: "\u5bf9\u7167",
+      buildVectors: "\u6784\u5efa\u5411\u91cf",
+      project: "\u9879\u76ee",
+      paperHash: "\u8bba\u6587\u54c8\u5e0c",
+      repoHash: "\u4ed3\u5e93\u54c8\u5e0c",
+      alignment: "\u5bf9\u7167\u6587\u4ef6",
+      summary: "\u9879\u76ee\u6c89\u6dc0",
+      ask: "\u8be2\u95ee",
+      question: "\u95ee\u9898",
+      submit: "\u63d0\u4ea4\u95ee\u9898",
+      emptyProjects: "\u6682\u65e0\u9879\u76ee",
+      selectProject: "\u8bf7\u9009\u62e9\u9879\u76ee\u67e5\u770b\u8be6\u60c5\u3002",
+      noSummary: "\u6682\u65e0\u6c89\u6dc0\u5185\u5bb9\u3002",
+      noQuestions: "\u6682\u65e0\u95ee\u7b54\u3002",
+      working: "\u5904\u7406\u4e2d...",
+      guideTitle: "\u4f7f\u7528\u6307\u5357",
+      guideSteps: [
+        "1. \u521b\u5efa\u9879\u76ee\uff1a\u8f93\u5165\u8bba\u6587\u548c\u4ed3\u5e93\u94fe\u63a5\u3002",
+        "2. \u70b9\u51fb\u89e3\u6790\u8bba\u6587\uff0c\u751f\u6210\u6bb5\u843d\u7ed3\u6784\u3002",
+        "3. \u7d22\u5f15\u4ee3\u7801\uff0c\u751f\u6210\u6587\u4ef6\u3001\u7b26\u53f7\u548c\u6587\u672c\u7d22\u5f15\u3002",
+        "4. \u5bf9\u7167\u7ed3\u679c\u7528\u4e8e\u627e\u5230\u6bb5\u843d\u4e0e\u4ee3\u7801\u8fde\u63a5\u3002",
+        "5. \u6784\u5efa\u5411\u91cf\u7528\u4e8e\u68c0\u7d22\u6587\u672c\u3002",
+        "6. \u63d0\u4ea4\u95ee\u9898\uff0c\u4f1a\u4fdd\u5b58\u95ee\u7b54\u548c\u8bc1\u636e\u3002",
+      ],
+    },
+    en: {
+      eyebrow: "Paper + Code Alignment",
+      title: "Project Workspace",
+      projects: "Projects",
+      create: "Create Project",
+      projectName: "Project name",
+      paperUrl: "Paper URL",
+      repoUrl: "GitHub URL",
+      focusPoints: "Focus points (comma separated)",
+      createBtn: "Create project",
+      detail: "Project Detail",
+      ingest: "Ingest paper",
+      indexCode: "Index code",
+      align: "Align",
+      buildVectors: "Build vectors",
+      project: "Project",
+      paperHash: "Paper hash",
+      repoHash: "Repo hash",
+      alignment: "Alignment",
+      summary: "Project Summary",
+      ask: "Ask a Question",
+      question: "Question",
+      submit: "Submit question",
+      emptyProjects: "No projects yet.",
+      selectProject: "Select a project to view details.",
+      noSummary: "No summary yet.",
+      noQuestions: "No questions yet.",
+      working: "Working...",
+      guideTitle: "Usage Guide",
+      guideSteps: [
+        "1. Create a project with paper and repo URLs.",
+        "2. Ingest the paper to parse paragraphs.",
+        "3. Index the code for files, symbols, and text.",
+        "4. Align to link paragraphs with code.",
+        "5. Build vectors for retrieval.",
+        "6. Ask questions and persist evidence.",
+      ],
+    },
+  } as const;
+
+  const t = copy[lang];
 
   const focusPoints = useMemo(() => {
     const trimmed = form.focus_points.trim();
@@ -196,17 +278,25 @@ export default function App() {
     <div className="app">
       <header className="header">
         <div>
-          <p className="eyebrow">Paper + Code Alignment</p>
-          <h1>Project Workspace</h1>
+          <p className="eyebrow">{t.eyebrow}</p>
+          <h1>{t.title}</h1>
         </div>
         <div className="status">
-          <span>{projects.length} projects</span>
+          <span>{projects.length} {t.projects.toLowerCase()}</span>
+        </div>
+        <div className="lang-toggle">
+          <button className={lang === "zh" ? "toggle active" : "toggle"} onClick={() => setLang("zh")}>
+            \u4e2d\u6587
+          </button>
+          <button className={lang === "en" ? "toggle active" : "toggle"} onClick={() => setLang("en")}>
+            EN
+          </button>
         </div>
       </header>
 
       <div className="layout">
         <aside className="sidebar">
-          <h2>Projects</h2>
+          <h2>{t.projects}</h2>
           <div className="project-list">
             {projects.map((project) => (
               <button
@@ -218,16 +308,16 @@ export default function App() {
                 <div className="project-meta">{project.paper_url}</div>
               </button>
             ))}
-            {projects.length === 0 && <div className="empty">No projects yet.</div>}
+            {projects.length === 0 && <div className="empty">{t.emptyProjects}</div>}
           </div>
         </aside>
 
         <main className="main">
           <section className="card">
-            <h2>Create Project</h2>
+            <h2>{t.create}</h2>
             <form className="form" onSubmit={handleCreate}>
               <label>
-                Project name
+                {t.projectName}
                 <input
                   value={form.name}
                   onChange={(e) => setForm({ ...form, name: e.target.value })}
@@ -236,7 +326,7 @@ export default function App() {
                 />
               </label>
               <label>
-                Paper URL
+                {t.paperUrl}
                 <input
                   value={form.paper_url}
                   onChange={(e) => setForm({ ...form, paper_url: e.target.value })}
@@ -245,7 +335,7 @@ export default function App() {
                 />
               </label>
               <label>
-                GitHub URL
+                {t.repoUrl}
                 <input
                   value={form.repo_url}
                   onChange={(e) => setForm({ ...form, repo_url: e.target.value })}
@@ -254,7 +344,7 @@ export default function App() {
                 />
               </label>
               <label>
-                Focus points (comma separated)
+                {t.focusPoints}
                 <input
                   value={form.focus_points}
                   onChange={(e) => setForm({ ...form, focus_points: e.target.value })}
@@ -262,73 +352,82 @@ export default function App() {
                 />
               </label>
               <button type="submit" className="primary">
-                Create project
+                {t.createBtn}
               </button>
             </form>
           </section>
 
           <section className="card">
+            <h2>{t.guideTitle}</h2>
+            <div className="guide">
+              {t.guideSteps.map((step) => (
+                <p key={step}>{step}</p>
+              ))}
+            </div>
+          </section>
+
+          <section className="card">
             <div className="card-header">
-              <h2>Project Detail</h2>
+              <h2>{t.detail}</h2>
               <div className="button-row">
                 <button className="ghost" onClick={handleIngest} disabled={!selectedId || loading}>
-                  {loading ? "Working..." : "Ingest paper"}
+                  {loading ? t.working : t.ingest}
                 </button>
                 <button className="ghost" onClick={handleIndexCode} disabled={!selectedId || loading}>
-                  {loading ? "Working..." : "Index code"}
+                  {loading ? t.working : t.indexCode}
                 </button>
                 <button className="ghost" onClick={handleAlign} disabled={!selectedId || loading}>
-                  {loading ? "Working..." : "Align"}
+                  {loading ? t.working : t.align}
                 </button>
                 <button className="ghost" onClick={handleBuildVectors} disabled={!selectedId || loading}>
-                  {loading ? "Working..." : "Build vectors"}
+                  {loading ? t.working : t.buildVectors}
                 </button>
               </div>
             </div>
             {selectedProject ? (
               <div className="detail-grid">
                 <div>
-                  <p className="label">Project</p>
+                  <p className="label">{t.project}</p>
                   <p>{selectedProject.name}</p>
                 </div>
                 <div>
-                  <p className="label">Paper URL</p>
+                  <p className="label">{t.paperUrl}</p>
                   <p className="mono">{selectedProject.paper_url}</p>
                 </div>
                 <div>
-                  <p className="label">Repo URL</p>
+                  <p className="label">{t.repoUrl}</p>
                   <p className="mono">{selectedProject.repo_url}</p>
                 </div>
                 <div>
-                  <p className="label">Paper hash</p>
+                  <p className="label">{t.paperHash}</p>
                   <p className="mono">{selectedProject.paper_hash || "-"}</p>
                 </div>
                 <div>
-                  <p className="label">Repo hash</p>
+                  <p className="label">{t.repoHash}</p>
                   <p className="mono">{selectedProject.repo_hash || "-"}</p>
                 </div>
                 <div>
-                  <p className="label">Alignment</p>
+                  <p className="label">{t.alignment}</p>
                   <p className="mono">{selectedProject.alignment_path || "-"}</p>
                 </div>
               </div>
             ) : (
-              <p className="empty">Select a project to view details.</p>
+              <p className="empty">{t.selectProject}</p>
             )}
           </section>
 
           <section className="card">
-            <h2>Project Summary</h2>
+            <h2>{t.summary}</h2>
             <div className="summary">
-              {summary.text ? <pre>{summary.text}</pre> : <p className="empty">No summary yet.</p>}
+              {summary.text ? <pre>{summary.text}</pre> : <p className="empty">{t.noSummary}</p>}
             </div>
           </section>
 
           <section className="card">
-            <h2>Ask a Question</h2>
+            <h2>{t.ask}</h2>
             <form className="form" onSubmit={handleAsk}>
               <label>
-                Question
+                {t.question}
                 <input
                   value={question}
                   onChange={(e) => setQuestion(e.target.value)}
@@ -336,11 +435,11 @@ export default function App() {
                 />
               </label>
               <button type="submit" className="primary" disabled={!selectedId || loading}>
-                {loading ? "Working..." : "Submit question"}
+                {loading ? t.working : t.submit}
               </button>
             </form>
             <div className="qa-log">
-              {qaLog.length === 0 && <p className="empty">No questions yet.</p>}
+              {qaLog.length === 0 && <p className="empty">{t.noQuestions}</p>}
               {qaLog.map((entry, index) => (
                 <div className="qa-entry" key={`${entry.created_at}-${index}`}>
                   <p className="label">Q</p>
