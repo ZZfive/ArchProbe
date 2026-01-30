@@ -131,3 +131,31 @@ export async function indexCode(projectId: string): Promise<{
   }
   return res.json();
 }
+
+export async function alignProject(projectId: string): Promise<{
+  project_id: string;
+  alignment_path: string;
+  match_count: number;
+}> {
+  const res = await fetch(`${API_BASE}/projects/${projectId}/align`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    throw new Error("Failed to align project");
+  }
+  return res.json();
+}
+
+export async function buildVectors(projectId: string): Promise<{
+  project_id: string;
+  paper_index_path: string;
+  code_index_path: string;
+}> {
+  const res = await fetch(`${API_BASE}/projects/${projectId}/vector-index`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    throw new Error("Failed to build vector indices");
+  }
+  return res.json();
+}

@@ -20,6 +20,12 @@ from .code_ingest import (
     write_text_index,
 )
 from .alignment import build_alignment_map, write_alignment
+from .vector_index import (
+    build_vector_index,
+    load_vector_index,
+    query_vector_index,
+    write_vector_index,
+)
 from .ingest import (
     download_pdf,
     file_sha256,
@@ -368,6 +374,61 @@ def align_project(project_id: str) -> AlignmentResponse:
     )
 
 
+@app.post("/projects/{project_id}/vector-index")
+def build_vector_indices(project_id: str) -> dict:
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM projects WHERE id = ?", (project_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    project_dir = ensure_project_dirs(project_id)
+    parsed_path = project_dir / "paper" / "parsed.json"
+    text_index_path = project_dir / "code" / "text_index.json"
+    if not parsed_path.exists() or not text_index_path.exists():
+        raise HTTPException(
+            status_code=400, detail="Run paper ingest and code index first"
+        )
+
+    paper_data = json.loads(parsed_path.read_text(encoding="utf-8"))
+    paper_docs = []
+    for idx, paragraph in enumerate(paper_data.get("paragraphs", [])):
+        paper_docs.append(
+            {
+                "doc_id": f"paper:{idx}",
+                "text": paragraph.get("text", ""),
+            }
+        )
+
+    code_data = json.loads(text_index_path.read_text(encoding="utf-8"))
+    code_docs = []
+    for entry in code_data.get("entries", []):
+        code_docs.append(
+            {
+                "doc_id": f"code:{entry.get('path', '')}",
+                "text": entry.get("excerpt", ""),
+            }
+        )
+
+    paper_index = build_vector_index(paper_docs)
+    code_index = build_vector_index(code_docs)
+    paper_index_path = project_dir / "paper" / "vector_index.json"
+    code_index_path = project_dir / "code" / "vector_index.json"
+    write_vector_index(paper_index_path, paper_index)
+    write_vector_index(code_index_path, code_index)
+
+    return {
+        "project_id": project_id,
+        "paper_index_path": str(paper_index_path),
+        "code_index_path": str(code_index_path),
+    }
+
+
 @app.get("/projects/{project_id}/alignment")
 def get_alignment(project_id: str) -> dict:
     conn = get_connection()
@@ -428,6 +489,23 @@ def ask_project(project_id: str, payload: AskRequest) -> AskResponse:
         if alignment_file.exists():
             alignment = json.loads(alignment_file.read_text(encoding="utf-8"))
             evidence = _collect_evidence(alignment)
+
+    paper_vector_path = Path(
+        ensure_project_dirs(project_id) / "paper" / "vector_index.json"
+    )
+    code_vector_path = Path(
+        ensure_project_dirs(project_id) / "code" / "vector_index.json"
+    )
+    if paper_vector_path.exists():
+        paper_index = load_vector_index(paper_vector_path)
+        matches = query_vector_index(paper_index, payload.question, top_k=3)
+        for doc_id, score in matches:
+            evidence.append({"kind": "paper_vector", "doc_id": doc_id, "score": score})
+    if code_vector_path.exists():
+        code_index = load_vector_index(code_vector_path)
+        matches = query_vector_index(code_index, payload.question, top_k=3)
+        for doc_id, score in matches:
+            evidence.append({"kind": "code_vector", "doc_id": doc_id, "score": score})
 
     try:
         response = generate_answer(payload.question, evidence)

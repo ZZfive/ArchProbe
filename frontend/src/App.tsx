@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   askProject,
+  alignProject,
+  buildVectors,
   createProject,
   getProject,
   getQaLog,
@@ -156,6 +158,40 @@ export default function App() {
     }
   }
 
+  async function handleAlign() {
+    if (!selectedId) return;
+    setLoading(true);
+    setError(null);
+    try {
+      await alignProject(selectedId);
+      const project = await getProject(selectedId);
+      setSelectedProject(project);
+    } catch (err) {
+      if (err instanceof Error) {
+        setError(err.message);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleBuildVectors() {
+    if (!selectedId) return;
+    setLoading(true);
+    setError(null);
+    try {
+      await buildVectors(selectedId);
+      const project = await getProject(selectedId);
+      setSelectedProject(project);
+    } catch (err) {
+      if (err instanceof Error) {
+        setError(err.message);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <div className="app">
       <header className="header">
@@ -241,6 +277,12 @@ export default function App() {
                 <button className="ghost" onClick={handleIndexCode} disabled={!selectedId || loading}>
                   {loading ? "Working..." : "Index code"}
                 </button>
+                <button className="ghost" onClick={handleAlign} disabled={!selectedId || loading}>
+                  {loading ? "Working..." : "Align"}
+                </button>
+                <button className="ghost" onClick={handleBuildVectors} disabled={!selectedId || loading}>
+                  {loading ? "Working..." : "Build vectors"}
+                </button>
               </div>
             </div>
             {selectedProject ? (
@@ -264,6 +306,10 @@ export default function App() {
                 <div>
                   <p className="label">Repo hash</p>
                   <p className="mono">{selectedProject.repo_hash || "-"}</p>
+                </div>
+                <div>
+                  <p className="label">Alignment</p>
+                  <p className="mono">{selectedProject.alignment_path || "-"}</p>
                 </div>
               </div>
             ) : (
