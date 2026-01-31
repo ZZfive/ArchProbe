@@ -243,12 +243,6 @@ pre {
   cursor: pointer;
 }
 
-.toggle.active {
-  background: #1f3c88;
-  color: #ffffff;
-  border-color: #1f3c88;
-}
-
 .guide {
   display: grid;
   gap: 6px;

@@ -17,6 +17,7 @@ type SummaryState = { text: string; error?: string };
 
 export default function App() {
   const [lang, setLang] = useState<"zh" | "en">("zh");
+  const [guideOpen, setGuideOpen] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
@@ -72,6 +73,7 @@ export default function App() {
       noQuestions: "\u6682\u65e0\u95ee\u7b54\u3002",
       working: "\u5904\u7406\u4e2d...",
       guideTitle: "\u4f7f\u7528\u6307\u5357",
+      guideToggle: "\u70b9\u51fb\u67e5\u770b\u6216\u6536\u8d77",
       guideSteps: [
         "1. \u521b\u5efa\u9879\u76ee\uff1a\u8f93\u5165\u8bba\u6587\u548c\u4ed3\u5e93\u94fe\u63a5\u3002",
         "2. \u70b9\u51fb\u89e3\u6790\u8bba\u6587\uff0c\u751f\u6210\u6bb5\u843d\u7ed3\u6784\u3002",
@@ -110,6 +112,7 @@ export default function App() {
       noQuestions: "No questions yet.",
       working: "Working...",
       guideTitle: "Usage Guide",
+      guideToggle: "Click to expand or collapse",
       guideSteps: [
         "1. Create a project with paper and repo URLs.",
         "2. Ingest the paper to parse paragraphs.",
@@ -285,11 +288,11 @@ export default function App() {
           <span>{projects.length} {t.projects.toLowerCase()}</span>
         </div>
         <div className="lang-toggle">
-          <button className={lang === "zh" ? "toggle active" : "toggle"} onClick={() => setLang("zh")}>
-            \u4e2d\u6587
-          </button>
-          <button className={lang === "en" ? "toggle active" : "toggle"} onClick={() => setLang("en")}>
-            EN
+          <button
+            className="toggle"
+            onClick={() => setLang(lang === "zh" ? "en" : "zh")}
+          >
+            {lang === "zh" ? "\u4e2d\u6587 / EN" : "EN / \u4e2d\u6587"}
           </button>
         </div>
       </header>
@@ -358,12 +361,19 @@ export default function App() {
           </section>
 
           <section className="card">
-            <h2>{t.guideTitle}</h2>
-            <div className="guide">
-              {t.guideSteps.map((step) => (
-                <p key={step}>{step}</p>
-              ))}
+            <div className="card-header">
+              <h2>{t.guideTitle}</h2>
+              <button className="ghost" onClick={() => setGuideOpen(!guideOpen)}>
+                {t.guideToggle}
+              </button>
             </div>
+            {guideOpen && (
+              <div className="guide">
+                {t.guideSteps.map((step) => (
+                  <p key={step}>{step}</p>
+                ))}
+              </div>
+            )}
           </section>
 
           <section className="card">
