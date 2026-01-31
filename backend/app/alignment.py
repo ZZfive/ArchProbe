@@ -1,4 +1,5 @@
 import json
+import heapq
 import re
 from pathlib import Path
 from typing import Dict, List
@@ -18,6 +19,9 @@ def build_alignment_map(
     symbol_candidates = _build_symbol_candidates(symbol_entries, text_lookup)
     file_candidates = _build_file_candidates(text_entries)
 
+    symbol_inverted = _build_inverted_index(symbol_candidates)
+    file_inverted = _build_inverted_index(file_candidates)
+
     results = []
     for idx, paragraph in enumerate(paper.get("paragraphs", [])):
         text = paragraph.get("text", "")
@@ -25,7 +29,11 @@ def build_alignment_map(
         if not tokens:
             continue
         matches, confidence = _rank_candidates(
-            tokens, symbol_candidates, file_candidates
+            tokens,
+            symbol_candidates,
+            file_candidates,
+            symbol_inverted,
+            file_inverted,
         )
         results.append(
             {
@@ -116,11 +124,16 @@ def _build_file_candidates(entries: List[dict]) -> List[dict]:
 
 
 def _rank_candidates(
-    tokens: List[str], symbols: List[dict], files: List[dict]
+    tokens: List[str],
+    symbols: List[dict],
+    files: List[dict],
+    symbol_inverted: Dict[str, List[int]],
+    file_inverted: Dict[str, List[int]],
 ) -> tuple[List[dict], float]:
-    scored: List[dict] = []
     token_set = set(tokens)
-    for entry in symbols:
+
+    scored: List[dict] = []
+    for entry in _iter_candidates(token_set, symbols, symbol_inverted):
         score, matched = _score_tokens(token_set, entry.get("tokens", []))
         if score == 0:
             continue
@@ -136,7 +149,7 @@ def _rank_candidates(
                 "score": str(score),
             }
         )
-    for entry in files:
+    for entry in _iter_candidates(token_set, files, file_inverted):
         score, matched = _score_tokens(token_set, entry.get("tokens", []))
         if score == 0:
             continue
@@ -149,8 +162,8 @@ def _rank_candidates(
                 "score": str(score),
             }
         )
-    scored.sort(key=lambda item: int(item["score"]), reverse=True)
-    top = scored[:5]
+
+    top = heapq.nlargest(5, scored, key=lambda item: int(item["score"]))
     if not tokens:
         return top, 0.0
     best = int(top[0]["score"]) if top else 0
@@ -173,3 +186,26 @@ def _build_text_lookup(entries: List[dict]) -> Dict[str, str]:
         if path:
             lookup[path] = excerpt
     return lookup
+
+
+def _build_inverted_index(candidates: List[dict]) -> Dict[str, List[int]]:
+    index: Dict[str, List[int]] = {}
+    for idx, item in enumerate(candidates):
+        tokens = item.get("tokens", [])
+        for token in set(tokens):
+            index.setdefault(token, []).append(idx)
+    return index
+
+
+def _iter_candidates(
+    token_set: set, candidates: List[dict], inverted: Dict[str, List[int]]
+) -> List[dict]:
+    seen = set()
+    result = []
+    for token in token_set:
+        for idx in inverted.get(token, []):
+            if idx in seen:
+                continue
+            seen.add(idx)
+            result.append(candidates[idx])
+    return result

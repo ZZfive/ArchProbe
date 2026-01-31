@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -45,6 +45,20 @@ class AlignmentResponse(BaseModel):
     project_id: str
     alignment_path: str
     match_count: int
+
+
+class VectorIndexResponse(BaseModel):
+    project_id: str
+    paper_index_path: str
+    code_index_path: str
+    paper_bm25_path: str
+    code_bm25_path: str
+
+
+class AlignmentGetResponse(BaseModel):
+    project_id: str
+    alignment_path: Optional[str] = None
+    alignment: Optional[Dict[str, object]] = None
 
 
 class AskRequest(BaseModel):

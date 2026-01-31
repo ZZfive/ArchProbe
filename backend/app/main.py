@@ -1,9 +1,11 @@
 import json
+import heapq
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import List
 from uuid import uuid4
 
+import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -26,6 +28,12 @@ from .vector_index import (
     query_vector_index,
     write_vector_index,
 )
+from .bm25_index import (
+    build_bm25_index,
+    load_bm25_index,
+    query_bm25_index,
+    write_bm25_index,
+)
 from .ingest import (
     download_pdf,
     file_sha256,
@@ -35,6 +43,7 @@ from .ingest import (
 )
 from .schemas import (
     AlignmentResponse,
+    AlignmentGetResponse,
     AskRequest,
     AskResponse,
     CodeIndexResponse,
@@ -42,6 +51,7 @@ from .schemas import (
     ProjectCreate,
     ProjectDetail,
     ProjectOut,
+    VectorIndexResponse,
 )
 from .llm import LLMError, generate_answer
 from .storage import (
@@ -131,7 +141,7 @@ def create_project(payload: ProjectCreate) -> ProjectOut:
         name=payload.name,
         paper_url=payload.paper_url,
         repo_url=payload.repo_url,
-        focus_points=payload.focus_points,
+        focus_points=payload.focus_points or [],
         created_at=datetime.fromisoformat(now),
         updated_at=datetime.fromisoformat(now),
         paper_hash=None,
@@ -206,8 +216,15 @@ def ingest_paper(project_id: str) -> IngestResponse:
         )
 
     pdf_url = resolve_paper_url(row["paper_url"])
+    if not (pdf_url.startswith("http://") or pdf_url.startswith("https://")):
+        raise HTTPException(status_code=400, detail="Invalid paper URL")
     pdf_path = project_dir / "paper" / "paper.pdf"
-    download_pdf(pdf_url, pdf_path)
+    try:
+        download_pdf(pdf_url, pdf_path)
+    except ValueError as err:
+        raise HTTPException(status_code=400, detail=str(err))
+    except requests.RequestException as err:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch PDF: {err}")
 
     paper_hash = file_sha256(pdf_path)
     paragraphs = parse_pdf_to_paragraphs(pdf_path)
@@ -337,7 +354,11 @@ def align_project(project_id: str) -> AlignmentResponse:
     text_index_path = project_dir / "code" / "text_index.json"
     alignment_path = project_dir / "alignment" / "map.json"
 
-    if not parsed_path.exists() or not symbol_path.exists():
+    if (
+        not parsed_path.exists()
+        or not symbol_path.exists()
+        or not text_index_path.exists()
+    ):
         raise HTTPException(
             status_code=400, detail="Run paper ingest and code index first"
         )
@@ -374,8 +395,8 @@ def align_project(project_id: str) -> AlignmentResponse:
     )
 
 
-@app.post("/projects/{project_id}/vector-index")
-def build_vector_indices(project_id: str) -> dict:
+@app.post("/projects/{project_id}/vector-index", response_model=VectorIndexResponse)
+def build_vector_indices(project_id: str) -> VectorIndexResponse:
     conn = get_connection()
     try:
         row = conn.execute(
@@ -422,15 +443,24 @@ def build_vector_indices(project_id: str) -> dict:
     write_vector_index(paper_index_path, paper_index)
     write_vector_index(code_index_path, code_index)
 
-    return {
-        "project_id": project_id,
-        "paper_index_path": str(paper_index_path),
-        "code_index_path": str(code_index_path),
-    }
+    paper_bm25 = build_bm25_index(paper_docs)
+    code_bm25 = build_bm25_index(code_docs)
+    paper_bm25_path = project_dir / "paper" / "bm25_index.json"
+    code_bm25_path = project_dir / "code" / "bm25_index.json"
+    write_bm25_index(paper_bm25_path, paper_bm25)
+    write_bm25_index(code_bm25_path, code_bm25)
+
+    return VectorIndexResponse(
+        project_id=project_id,
+        paper_index_path=str(paper_index_path),
+        code_index_path=str(code_index_path),
+        paper_bm25_path=str(paper_bm25_path),
+        code_bm25_path=str(code_bm25_path),
+    )
 
 
-@app.get("/projects/{project_id}/alignment")
-def get_alignment(project_id: str) -> dict:
+@app.get("/projects/{project_id}/alignment", response_model=AlignmentGetResponse)
+def get_alignment(project_id: str) -> AlignmentGetResponse:
     conn = get_connection()
     try:
         row = conn.execute(
@@ -440,13 +470,20 @@ def get_alignment(project_id: str) -> dict:
         conn.close()
     if row is None:
         raise HTTPException(status_code=404, detail="Project not found")
-    if not row["alignment_path"]:
-        return {"project_id": project_id, "alignment_path": None}
-    alignment_path = Path(row["alignment_path"])
+    alignment_path_value = row["alignment_path"]
+    if not alignment_path_value:
+        return AlignmentGetResponse(
+            project_id=project_id, alignment_path=None, alignment=None
+        )
+    alignment_path = Path(alignment_path_value)
     if not alignment_path.exists():
-        return {"project_id": project_id, "alignment_path": None}
+        return AlignmentGetResponse(
+            project_id=project_id, alignment_path=str(alignment_path), alignment=None
+        )
     data = json.loads(alignment_path.read_text(encoding="utf-8"))
-    return {"project_id": project_id, "alignment": data}
+    return AlignmentGetResponse(
+        project_id=project_id, alignment_path=str(alignment_path), alignment=data
+    )
 
 
 @app.post("/projects/{project_id}/ask", response_model=AskResponse)
@@ -461,6 +498,16 @@ def ask_project(project_id: str, payload: AskRequest) -> AskResponse:
 
     if row is None:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    focus_points = []
+    raw_focus = row["focus_points"]
+    if raw_focus:
+        try:
+            parsed = json.loads(raw_focus)
+            if isinstance(parsed, list):
+                focus_points = [str(item) for item in parsed if str(item).strip()]
+        except json.JSONDecodeError:
+            focus_points = []
 
     now = datetime.now(timezone.utc).isoformat()
     existing = read_qa_log(project_id)
@@ -496,19 +543,84 @@ def ask_project(project_id: str, payload: AskRequest) -> AskResponse:
     code_vector_path = Path(
         ensure_project_dirs(project_id) / "code" / "vector_index.json"
     )
+    project_dir = ensure_project_dirs(project_id)
+    parsed_path = project_dir / "paper" / "parsed.json"
+    text_index_path = project_dir / "code" / "text_index.json"
+    paper_paragraphs: list[dict] = []
+    code_excerpts: dict[str, str] = {}
+    if parsed_path.exists():
+        try:
+            paper_data = json.loads(parsed_path.read_text(encoding="utf-8"))
+            raw_paragraphs = paper_data.get("paragraphs", [])
+            if isinstance(raw_paragraphs, list):
+                paper_paragraphs = raw_paragraphs
+        except json.JSONDecodeError:
+            paper_paragraphs = []
+    if text_index_path.exists():
+        try:
+            code_data = json.loads(text_index_path.read_text(encoding="utf-8"))
+            for entry in code_data.get("entries", []):
+                path = entry.get("path")
+                excerpt = entry.get("excerpt")
+                if path and excerpt and path not in code_excerpts:
+                    code_excerpts[str(path)] = str(excerpt)
+        except json.JSONDecodeError:
+            code_excerpts = {}
+    query_text = payload.question
+    if focus_points:
+        query_text = query_text + "\n\nFocus points: " + ", ".join(focus_points)
+    paper_vec_matches: list[tuple[str, float]] = []
+    code_vec_matches: list[tuple[str, float]] = []
     if paper_vector_path.exists():
         paper_index = load_vector_index(paper_vector_path)
-        matches = query_vector_index(paper_index, payload.question, top_k=3)
-        for doc_id, score in matches:
-            evidence.append({"kind": "paper_vector", "doc_id": doc_id, "score": score})
+        paper_vec_matches = query_vector_index(paper_index, query_text, top_k=5)
     if code_vector_path.exists():
         code_index = load_vector_index(code_vector_path)
-        matches = query_vector_index(code_index, payload.question, top_k=3)
-        for doc_id, score in matches:
-            evidence.append({"kind": "code_vector", "doc_id": doc_id, "score": score})
+        code_vec_matches = query_vector_index(code_index, query_text, top_k=5)
+
+    paper_bm25_path = project_dir / "paper" / "bm25_index.json"
+    code_bm25_path = project_dir / "code" / "bm25_index.json"
+    paper_bm25_matches: list[tuple[str, float]] = []
+    code_bm25_matches: list[tuple[str, float]] = []
+    if paper_bm25_path.exists():
+        paper_bm25 = load_bm25_index(paper_bm25_path)
+        paper_bm25_matches = query_bm25_index(paper_bm25, query_text, top_k=5)
+    if code_bm25_path.exists():
+        code_bm25 = load_bm25_index(code_bm25_path)
+        code_bm25_matches = query_bm25_index(code_bm25, query_text, top_k=5)
+
+    for doc_id, score in _rrf_fuse(
+        [("tfidf", paper_vec_matches), ("bm25", paper_bm25_matches)], top_k=3
+    ):
+        ev = {"kind": "paper_hybrid", "doc_id": doc_id, "score": score}
+        if isinstance(doc_id, str) and doc_id.startswith("paper:"):
+            raw_idx = doc_id.split(":", 1)[1]
+            if raw_idx.isdigit():
+                idx = int(raw_idx)
+                if 0 <= idx < len(paper_paragraphs):
+                    paragraph = paper_paragraphs[idx]
+                    ev["paragraph_index"] = str(idx)
+                    ev["page"] = str(paragraph.get("page", ""))
+                    ev["text_excerpt"] = str(paragraph.get("text", ""))[:240]
+        evidence.append(ev)
+
+    for doc_id, score in _rrf_fuse(
+        [("tfidf", code_vec_matches), ("bm25", code_bm25_matches)], top_k=3
+    ):
+        ev = {"kind": "code_hybrid", "doc_id": doc_id, "score": score}
+        if isinstance(doc_id, str) and doc_id.startswith("code:"):
+            rel = doc_id.split(":", 1)[1]
+            if rel:
+                ev["path"] = rel
+                ev["excerpt"] = code_excerpts.get(rel, "")[:240]
+        evidence.append(ev)
+
+    evidence = _dedup_evidence(evidence)
 
     try:
-        response = generate_answer(payload.question, evidence)
+        response = generate_answer(
+            payload.question, evidence, focus_points=focus_points or None
+        )
         answer = str(response.get("answer", ""))
         raw_confidence = response.get("confidence", 0.0)
         if isinstance(raw_confidence, (int, float)):
@@ -546,7 +658,8 @@ def ask_project(project_id: str, payload: AskRequest) -> AskResponse:
 
 
 def _collect_evidence(alignment: dict) -> list[dict]:
-    evidence = []
+    limit = 20
+    heap: list[tuple[tuple[int, float], dict]] = []
     for item in alignment.get("results", []):
         for match in item.get("matches", []):
             raw_score = match.get("score", "0")
@@ -566,23 +679,59 @@ def _collect_evidence(alignment: dict) -> list[dict]:
                 paragraph_confidence = float(raw_conf)
             else:
                 paragraph_confidence = 0.0
-            evidence.append(
-                {
-                    "paragraph_index": item.get("paragraph_index"),
-                    "page": item.get("page"),
-                    "text_excerpt": item.get("text_excerpt"),
-                    "paragraph_confidence": paragraph_confidence,
-                    "kind": match.get("kind"),
-                    "path": match.get("path"),
-                    "name": match.get("name"),
-                    "line": match.get("line"),
-                    "score": score,
-                    "matched_tokens": match.get("matched_tokens"),
-                    "excerpt": match.get("excerpt"),
-                }
-            )
-    evidence.sort(
-        key=lambda item: (item.get("score", 0), item.get("paragraph_confidence", 0.0)),
-        reverse=True,
-    )
-    return evidence[:20]
+            entry = {
+                "paragraph_index": item.get("paragraph_index"),
+                "page": item.get("page"),
+                "text_excerpt": item.get("text_excerpt"),
+                "paragraph_confidence": paragraph_confidence,
+                "kind": match.get("kind"),
+                "path": match.get("path"),
+                "name": match.get("name"),
+                "line": match.get("line"),
+                "score": score,
+                "matched_tokens": match.get("matched_tokens"),
+                "excerpt": match.get("excerpt"),
+            }
+            key = (score, paragraph_confidence)
+            if len(heap) < limit:
+                heapq.heappush(heap, (key, entry))
+            else:
+                heapq.heappushpop(heap, (key, entry))
+
+    top = [item for _, item in sorted(heap, key=lambda pair: pair[0], reverse=True)]
+    return top
+
+
+def _dedup_evidence(items: list[dict]) -> list[dict]:
+    seen = set()
+    out: list[dict] = []
+    for item in items:
+        kind = str(item.get("kind", ""))
+        key = (
+            kind,
+            str(item.get("path", "")),
+            str(item.get("line", "")),
+            str(item.get("name", "")),
+            str(item.get("paragraph_index", "")),
+            str(item.get("doc_id", "")),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    return out
+
+
+def _rrf_fuse(
+    ranked_lists: list[tuple[str, list[tuple[str, float]]]],
+    top_k: int,
+    rrf_k: int = 60,
+) -> list[tuple[str, float]]:
+    scores: dict[str, float] = {}
+    for _, matches in ranked_lists:
+        for rank, (doc_id, _) in enumerate(matches, start=1):
+            if not doc_id:
+                continue
+            scores[doc_id] = scores.get(doc_id, 0.0) + (1.0 / (rrf_k + rank))
+    ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+    return ranked[:top_k]

@@ -3,7 +3,15 @@ import os
 import re
 import subprocess
 from pathlib import Path
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Optional
+
+from .config import (
+    CODE_INDEX_IGNORE_DIRS,
+    CODE_INDEX_IGNORE_EXTS,
+    CODE_INDEX_MAX_FILE_BYTES,
+    CODE_INDEX_MAX_FILES,
+    CODE_INDEX_MAX_TOTAL_BYTES,
+)
 
 
 def clone_or_update_repo(repo_url: str, repo_dir: Path) -> None:
@@ -14,7 +22,7 @@ def clone_or_update_repo(repo_url: str, repo_dir: Path) -> None:
             ["git", "-C", str(repo_dir), "reset", "--hard", "origin/HEAD"], check=True
         )
         return
-    subprocess.run(["git", "clone", repo_url, str(repo_dir)], check=True)
+    subprocess.run(["git", "clone", "--depth=1", repo_url, str(repo_dir)], check=True)
 
 
 def get_repo_hash(repo_dir: Path) -> str:
@@ -29,25 +37,68 @@ def get_repo_hash(repo_dir: Path) -> str:
 
 def build_file_index(repo_dir: Path) -> List[Dict[str, str]]:
     entries: List[Dict[str, str]] = []
-    for root, dirs, files in os.walk(repo_dir):
-        dirs[:] = [d for d in dirs if d != ".git"]
-        for filename in files:
-            path = Path(root) / filename
-            rel = path.relative_to(repo_dir)
-            stat = path.stat()
-            entries.append(
-                {
-                    "path": str(rel),
-                    "size": str(stat.st_size),
-                    "mtime": str(int(stat.st_mtime)),
-                }
-            )
+    total_bytes = 0
+    file_count = 0
+    paths = _list_repo_files(repo_dir)
+    for rel in paths:
+        if _should_skip_rel_path(rel):
+            continue
+        abs_path = repo_dir / rel
+        try:
+            stat = abs_path.stat()
+        except OSError:
+            continue
+        if not abs_path.is_file():
+            continue
+        total_bytes += int(stat.st_size)
+        file_count += 1
+        entries.append(
+            {
+                "path": rel,
+                "size": str(stat.st_size),
+                "mtime": str(int(stat.st_mtime)),
+            }
+        )
+        if (
+            file_count >= CODE_INDEX_MAX_FILES
+            or total_bytes >= CODE_INDEX_MAX_TOTAL_BYTES
+        ):
+            break
     return entries
+
+
+def _list_repo_files(repo_dir: Path) -> List[str]:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_dir), "ls-files", "-z"],
+            check=True,
+            capture_output=True,
+        )
+        raw = result.stdout
+        if not raw:
+            return []
+        parts = raw.split(b"\x00")
+        return [part.decode("utf-8", errors="ignore") for part in parts if part]
+    except (OSError, subprocess.CalledProcessError):
+        paths = []
+        for root, dirs, files in os.walk(repo_dir):
+            dirs[:] = [d for d in dirs if d != ".git"]
+            for filename in files:
+                path = Path(root) / filename
+                try:
+                    rel = path.relative_to(repo_dir)
+                except ValueError:
+                    continue
+                paths.append(str(rel))
+        return paths
 
 
 def build_symbol_index(repo_dir: Path, paths: Iterable[Path]) -> List[Dict[str, str]]:
     symbols: List[Dict[str, str]] = []
     for path in paths:
+        rel = str(path.relative_to(repo_dir))
+        if _should_skip_rel_path(rel):
+            continue
         ext = path.suffix.lower()
         if ext not in {".py", ".ts", ".tsx", ".js", ".jsx"}:
             continue
@@ -71,15 +122,18 @@ def build_symbol_index(repo_dir: Path, paths: Iterable[Path]) -> List[Dict[str, 
 def build_text_index(repo_dir: Path, paths: Iterable[Path]) -> List[Dict[str, str]]:
     entries: List[Dict[str, str]] = []
     for path in paths:
+        rel = str(path.relative_to(repo_dir))
+        if _should_skip_rel_path(rel):
+            continue
         ext = path.suffix.lower()
-        if ext in {".png", ".jpg", ".jpeg", ".gif", ".mp4", ".pt", ".ckpt"}:
+        if ext in CODE_INDEX_IGNORE_EXTS:
             continue
         content = _safe_read_text(path)
         if content is None:
             continue
         entries.append(
             {
-                "path": str(path.relative_to(repo_dir)),
+                "path": rel,
                 "ext": ext,
                 "excerpt": content[:2000],
             }
@@ -87,8 +141,12 @@ def build_text_index(repo_dir: Path, paths: Iterable[Path]) -> List[Dict[str, st
     return entries
 
 
-def _safe_read_text(path: Path) -> str | None:
-    if path.stat().st_size > 1_000_000:
+def _safe_read_text(path: Path) -> Optional[str]:
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return None
+    if size > CODE_INDEX_MAX_FILE_BYTES:
         return None
     try:
         data = path.read_bytes()
@@ -135,3 +193,16 @@ def write_text_index(dest_path: Path, data: dict) -> None:
     dest_path.write_text(
         json.dumps(data, ensure_ascii=True, indent=2), encoding="utf-8"
     )
+
+
+def _should_skip_rel_path(rel_path: str) -> bool:
+    if not rel_path:
+        return True
+    parts = rel_path.split("/")
+    for part in parts[:-1]:
+        if part in CODE_INDEX_IGNORE_DIRS:
+            return True
+    ext = Path(rel_path).suffix.lower()
+    if ext and ext in CODE_INDEX_IGNORE_EXTS:
+        return True
+    return False

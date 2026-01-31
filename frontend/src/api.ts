@@ -11,6 +11,8 @@ export type Project = {
   paper_hash?: string | null;
   repo_hash?: string | null;
   paper_parsed_path?: string | null;
+  code_index_path?: string | null;
+  alignment_path?: string | null;
 };
 
 export async function listProjects(): Promise<Project[]> {
@@ -102,10 +104,11 @@ export async function getQaLog(projectId: string): Promise<{
       kind?: string;
       path?: string;
       name?: string;
-      line?: string;
-      score?: number;
+      line?: string | number;
+      score?: string | number;
       matched_tokens?: string[];
       excerpt?: string;
+      doc_id?: string;
     }>;
     confidence: number;
     created_at: string;
@@ -150,6 +153,8 @@ export async function buildVectors(projectId: string): Promise<{
   project_id: string;
   paper_index_path: string;
   code_index_path: string;
+  paper_bm25_path: string;
+  code_bm25_path: string;
 }> {
   const res = await fetch(`${API_BASE}/projects/${projectId}/vector-index`, {
     method: "POST",

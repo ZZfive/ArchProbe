@@ -31,10 +31,14 @@ export default function App() {
         kind?: string;
         path?: string;
         name?: string;
-        line?: string;
-        score?: number;
+        line?: string | number;
+        score?: string | number;
         paragraph_confidence?: number;
         excerpt?: string;
+        paragraph_index?: string;
+        page?: string;
+        text_excerpt?: string;
+        doc_id?: string;
       }>;
     }>
   >([]);
@@ -407,6 +411,14 @@ export default function App() {
                 <div>
                   <p className="label">{t.repoUrl}</p>
                   <p className="mono">{selectedProject.repo_url}</p>
+                </div>
+                <div>
+                  <p className="label">{t.focusPoints}</p>
+                  <p>
+                    {selectedProject.focus_points && selectedProject.focus_points.length > 0
+                      ? selectedProject.focus_points.join(", ")
+                      : "-"}
+                  </p>
                 </div>
                 <div>
                   <p className="label">{t.paperHash}</p>
