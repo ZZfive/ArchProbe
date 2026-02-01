@@ -44,6 +44,7 @@ Run the API (from `backend/`):
 Notes:
 
 - No test/lint tooling is defined in-repo (no pytest/ruff/black configs, no CI workflows).
+- Backend CORS allows loopback dev origins (localhost/127.0.0.1/[::1]) on any port (Vite may move from 5173 to 5174 if 5173 is taken).
 
 ### Running a single test (current state)
 

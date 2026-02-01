@@ -1,5 +1,6 @@
 import json
 import heapq
+import itertools
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import List
@@ -68,7 +69,15 @@ app = FastAPI(title="Paper-Code Align")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    # Local dev: browsers may use localhost, 127.0.0.1, or IPv6 loopback.
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://[::1]:5173",
+    ],
+    # Vite may auto-increment the port (e.g. 5174) if 5173 is taken.
+    # Allow any loopback origin on any port for local dev.
+    allow_origin_regex=r"^http://(localhost|127\.0\.0\.1|\[::1\]):\d+$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -633,7 +642,8 @@ def ask_project(project_id: str, payload: AskRequest) -> AskResponse:
         else:
             confidence = 0.0
     except LLMError as err:
-        answer = f"LLM request failed: {err}"
+        # LLMError is already user-facing.
+        answer = str(err)
         confidence = 0.0
 
     entry = {
@@ -659,7 +669,10 @@ def ask_project(project_id: str, payload: AskRequest) -> AskResponse:
 
 def _collect_evidence(alignment: dict) -> list[dict]:
     limit = 20
-    heap: list[tuple[tuple[int, float], dict]] = []
+    # heap items are compared lexicographically; include a monotonic counter so ties
+    # on (score, paragraph_confidence) never fall back to comparing dict entries.
+    heap: list[tuple[tuple[int, float], int, dict]] = []
+    counter = itertools.count()
     for item in alignment.get("results", []):
         for match in item.get("matches", []):
             raw_score = match.get("score", "0")
@@ -694,11 +707,11 @@ def _collect_evidence(alignment: dict) -> list[dict]:
             }
             key = (score, paragraph_confidence)
             if len(heap) < limit:
-                heapq.heappush(heap, (key, entry))
+                heapq.heappush(heap, (key, next(counter), entry))
             else:
-                heapq.heappushpop(heap, (key, entry))
+                heapq.heappushpop(heap, (key, next(counter), entry))
 
-    top = [item for _, item in sorted(heap, key=lambda pair: pair[0], reverse=True)]
+    top = [item for _, __, item in sorted(heap, key=lambda pair: pair[0], reverse=True)]
     return top
 
 

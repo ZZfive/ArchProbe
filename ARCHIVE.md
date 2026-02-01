@@ -76,7 +76,7 @@ uvicorn app.main:app --reload --port 8000
 ```
 
 Notes:
-- CORS is currently allowlisted to `http://localhost:5173` (`backend/app/main.py`).
+- CORS is currently allowlisted to loopback dev origins (localhost/127.0.0.1/[::1]) on any port (`backend/app/main.py`).
 - Runtime state is written under `projects/` and to `backend/app.db` (`backend/app/config.py`).
 
 **Frontend (Vite + React)**
@@ -153,7 +153,7 @@ Reset / cleanup:
 **Port Hardcoding**
 - Frontend API calls are hardcoded to `http://localhost:8000` (`frontend/src/api.ts`)
 - Frontend dev server runs on port `5173` (`frontend/vite.config.ts`)
-- Backend CORS is configured to allow origins from `http://localhost:5173` (`backend/app/main.py`)
+- Backend CORS is configured to allow origins from local loopback dev origins (see `backend/app/main.py`)
 
 **Implications**
 - Frontend will not work if backend runs on a different port or host without code changes
