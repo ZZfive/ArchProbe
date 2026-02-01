@@ -50,7 +50,24 @@ def _call_openai_compatible(prompt: str) -> Dict[str, object]:
         f"{LLM_API_BASE}/chat/completions", headers=headers, json=payload, timeout=60
     )
     if not res.ok:
-        raise LLMError(f"LLM request failed: {res.status_code}")
+        detail = ""
+        try:
+            data = res.json()
+            raw_msg = (
+                data.get("error", {}).get("message") if isinstance(data, dict) else None
+            )
+            if raw_msg:
+                detail = str(raw_msg).strip()
+        except ValueError:
+            detail = res.text.strip()
+
+        if res.status_code in {401, 403}:
+            msg = "LLM unauthorized (check LLM_API_KEY and LLM_API_BASE)"
+        else:
+            msg = f"LLM request failed ({res.status_code})"
+        if detail:
+            msg = msg + f": {detail}"
+        raise LLMError(msg)
     data = res.json()
     content = data["choices"][0]["message"]["content"]
     return {"answer": content, "confidence": 0.6}
