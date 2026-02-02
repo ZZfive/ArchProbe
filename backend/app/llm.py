@@ -1,5 +1,5 @@
 import json
-from typing import Dict, List
+from typing import Dict, Generator, List, Optional
 
 import requests
 
@@ -30,6 +30,22 @@ def generate_answer(
     return response
 
 
+def generate_answer_stream(
+    question: str,
+    evidence: List[Dict[str, object]],
+    focus_points: List[str] | None = None,
+) -> Generator[str, None, None]:
+    if LLM_PROVIDER == "local":
+        yield "Local model not configured yet. Evidence collected below."
+        return
+    if not LLM_API_KEY:
+        yield "LLM API key not configured. Evidence collected below."
+        return
+
+    prompt = _build_prompt(question, evidence, focus_points=focus_points)
+    yield from _call_openai_compatible_stream(prompt)
+
+
 def _call_openai_compatible(prompt: str) -> Dict[str, object]:
     headers = {
         "Authorization": f"Bearer {LLM_API_KEY}",
@@ -40,7 +56,7 @@ def _call_openai_compatible(prompt: str) -> Dict[str, object]:
         "messages": [
             {
                 "role": "system",
-                "content": "Answer based on provided evidence. Be concise.",
+                "content": _build_system_prompt(),
             },
             {"role": "user", "content": prompt},
         ],
@@ -71,6 +87,80 @@ def _call_openai_compatible(prompt: str) -> Dict[str, object]:
     data = res.json()
     content = data["choices"][0]["message"]["content"]
     return {"answer": content, "confidence": 0.6}
+
+
+def _call_openai_compatible_stream(prompt: str) -> Generator[str, None, None]:
+    headers = {
+        "Authorization": f"Bearer {LLM_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": LLM_MODEL,
+        "messages": [
+            {
+                "role": "system",
+                "content": _build_system_prompt(),
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.2,
+        "stream": True,
+    }
+
+    with requests.post(
+        f"{LLM_API_BASE}/chat/completions",
+        headers=headers,
+        json=payload,
+        timeout=120,
+        stream=True,
+    ) as res:
+        if not res.ok:
+            detail = ""
+            try:
+                data = res.json()
+                raw_msg = (
+                    data.get("error", {}).get("message")
+                    if isinstance(data, dict)
+                    else None
+                )
+                if raw_msg:
+                    detail = str(raw_msg).strip()
+            except ValueError:
+                detail = res.text.strip()
+
+            if res.status_code in {401, 403}:
+                msg = "LLM unauthorized (check LLM_API_KEY and LLM_API_BASE)"
+            else:
+                msg = f"LLM request failed ({res.status_code})"
+            if detail:
+                msg = msg + f": {detail}"
+            raise LLMError(msg)
+
+        for line in res.iter_lines():
+            if line:
+                line_str = line.decode("utf-8")
+                if line_str.startswith("data: "):
+                    data_str = line_str[6:]
+                    if data_str.strip() == "[DONE]":
+                        return
+                    try:
+                        data = json.loads(data_str)
+                        if "choices" in data and len(data["choices"]) > 0:
+                            delta = data["choices"][0].get("delta", {})
+                            content = delta.get("content", "")
+                            if content:
+                                yield content
+                    except json.JSONDecodeError:
+                        continue
+
+
+def _build_system_prompt() -> str:
+    return (
+        "Answer based on provided evidence. Be concise. "
+        "IMPORTANT: You must respond in the SAME LANGUAGE as the user's question. "
+        "If the user asks in Chinese, answer in Chinese. If the user asks in English, answer in English. "
+        "Maintain the same language throughout your entire response."
+    )
 
 
 def _build_prompt(

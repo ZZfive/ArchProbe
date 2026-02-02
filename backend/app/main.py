@@ -10,6 +10,7 @@ from uuid import uuid4
 import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 from .config import PROJECTS_DIR
 from .db import get_connection, init_db
@@ -56,7 +57,7 @@ from .schemas import (
     ProjectOut,
     VectorIndexResponse,
 )
-from .llm import LLMError, generate_answer
+from .llm import LLMError, generate_answer, generate_answer_stream
 from .storage import (
     append_project_summary,
     append_qa_log,
@@ -779,6 +780,154 @@ def ask_project(project_id: str, payload: AskRequest) -> AskResponse:
         answer=answer,
         confidence=confidence,
         created_at=datetime.fromisoformat(now),
+    )
+
+
+@app.post("/projects/{project_id}/ask-stream")
+def ask_project_stream(project_id: str, payload: AskRequest) -> StreamingResponse:
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM projects WHERE id = ?", (project_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    focus_points = []
+    raw_focus = row["focus_points"]
+    if raw_focus:
+        try:
+            parsed = json.loads(raw_focus)
+            if isinstance(parsed, list):
+                focus_points = [str(item) for item in parsed if str(item).strip()]
+        except json.JSONDecodeError:
+            focus_points = []
+
+    alignment_path = row["alignment_path"]
+    evidence = []
+    if alignment_path:
+        alignment_file = Path(alignment_path)
+        if alignment_file.exists():
+            alignment = json.loads(alignment_file.read_text(encoding="utf-8"))
+            evidence = _collect_evidence(alignment)
+
+    paper_vector_path = Path(
+        ensure_project_dirs(project_id) / "paper" / "vector_index.json"
+    )
+    code_vector_path = Path(
+        ensure_project_dirs(project_id) / "code" / "vector_index.json"
+    )
+    project_dir = ensure_project_dirs(project_id)
+    parsed_path = project_dir / "paper" / "parsed.json"
+    text_index_path = project_dir / "code" / "text_index.json"
+    paper_paragraphs: list[dict] = []
+    code_excerpts: dict[str, str] = {}
+    if parsed_path.exists():
+        try:
+            paper_data = json.loads(parsed_path.read_text(encoding="utf-8"))
+            raw_paragraphs = paper_data.get("paragraphs", [])
+            if isinstance(raw_paragraphs, list):
+                paper_paragraphs = raw_paragraphs
+        except json.JSONDecodeError:
+            paper_paragraphs = []
+    if text_index_path.exists():
+        try:
+            code_data = json.loads(text_index_path.read_text(encoding="utf-8"))
+            for entry in code_data.get("entries", []):
+                path = entry.get("path")
+                excerpt = entry.get("excerpt")
+                if path and excerpt and path not in code_excerpts:
+                    code_excerpts[str(path)] = str(excerpt)
+        except json.JSONDecodeError:
+            code_excerpts = {}
+    query_text = payload.question
+    if focus_points:
+        query_text = query_text + "\n\nFocus points: " + ", ".join(focus_points)
+    paper_vec_matches: list[tuple[str, float]] = []
+    code_vec_matches: list[tuple[str, float]] = []
+    if paper_vector_path.exists():
+        paper_index = load_vector_index(paper_vector_path)
+        paper_vec_matches = query_vector_index(paper_index, query_text, top_k=5)
+    if code_vector_path.exists():
+        code_index = load_vector_index(code_vector_path)
+        code_vec_matches = query_vector_index(code_index, query_text, top_k=5)
+
+    paper_bm25_path = project_dir / "paper" / "bm25_index.json"
+    code_bm25_path = project_dir / "code" / "bm25_index.json"
+    paper_bm25_matches: list[tuple[str, float]] = []
+    code_bm25_matches: list[tuple[str, float]] = []
+    if paper_bm25_path.exists():
+        paper_bm25 = load_bm25_index(paper_bm25_path)
+        paper_bm25_matches = query_bm25_index(paper_bm25, query_text, top_k=5)
+    if code_bm25_path.exists():
+        code_bm25 = load_bm25_index(code_bm25_path)
+        code_bm25_matches = query_bm25_index(code_bm25, query_text, top_k=5)
+
+    for doc_id, score in _rrf_fuse(
+        [("tfidf", paper_vec_matches), ("bm25", paper_bm25_matches)], top_k=3
+    ):
+        ev = {"kind": "paper_hybrid", "doc_id": doc_id, "score": score}
+        if isinstance(doc_id, str) and doc_id.startswith("paper:"):
+            raw_idx = doc_id.split(":", 1)[1]
+            if raw_idx.isdigit():
+                idx = int(raw_idx)
+                if 0 <= idx < len(paper_paragraphs):
+                    paragraph = paper_paragraphs[idx]
+                    ev["paragraph_index"] = str(idx)
+                    ev["page"] = str(paragraph.get("page", ""))
+                    ev["text_excerpt"] = str(paragraph.get("text", ""))[:240]
+        evidence.append(ev)
+
+    for doc_id, score in _rrf_fuse(
+        [("tfidf", code_vec_matches), ("bm25", code_bm25_matches)], top_k=3
+    ):
+        ev = {"kind": "code_hybrid", "doc_id": doc_id, "score": score}
+        if isinstance(doc_id, str) and doc_id.startswith("code:"):
+            rel = doc_id.split(":", 1)[1]
+            if rel:
+                ev["path"] = rel
+                ev["excerpt"] = code_excerpts.get(rel, "")[:240]
+        evidence.append(ev)
+
+    evidence = _dedup_evidence(evidence)
+
+    def stream_generator():
+        answer_parts = []
+        try:
+            for chunk in generate_answer_stream(
+                payload.question, evidence, focus_points=focus_points or None
+            ):
+                answer_parts.append(chunk)
+                yield f"data: {json.dumps({'chunk': chunk}, ensure_ascii=False)}\n\n"
+
+            answer = "".join(answer_parts)
+            now = datetime.now(timezone.utc).isoformat()
+            entry = {
+                "question": payload.question,
+                "answer": answer,
+                "evidence": evidence,
+                "confidence": 0.6,
+                "created_at": now,
+            }
+            append_qa_log(project_id, entry)
+            append_project_summary(
+                project_id, [f"Q: {payload.question}", f"A: {answer}", "---"]
+            )
+            yield f"data: {json.dumps({'done': True, 'answer': answer}, ensure_ascii=False)}\n\n"
+        except LLMError as err:
+            yield f"data: {json.dumps({'error': str(err)}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        stream_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 

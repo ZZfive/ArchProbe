@@ -95,6 +95,67 @@ export async function askProject(projectId: string, question: string): Promise<{
   return res.json();
 }
 
+export async function askProjectStream(
+  projectId: string,
+  question: string,
+  onChunk: (chunk: string) => void,
+  onComplete: (answer: string) => void,
+  onError: (error: string) => void
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/projects/${projectId}/ask-stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question }),
+  });
+  
+  if (!res.ok) {
+    throw new Error("Failed to start stream");
+  }
+  
+  const reader = res.body?.getReader();
+  if (!reader) {
+    throw new Error("No response body");
+  }
+  
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let fullAnswer = "";
+  
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      
+      for (const line of lines) {
+        if (line.startsWith("data: ")) {
+          const dataStr = line.slice(6);
+          try {
+            const data = JSON.parse(dataStr);
+            if (data.chunk) {
+              fullAnswer += data.chunk;
+              onChunk(data.chunk);
+            }
+            if (data.done) {
+              onComplete(data.answer || fullAnswer);
+              return;
+            }
+            if (data.error) {
+              onError(data.error);
+              return;
+            }
+          } catch {}
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 export async function getQaLog(projectId: string): Promise<{
   project_id: string;
   entries: Array<{

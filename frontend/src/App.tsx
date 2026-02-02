@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
-  askProject,
+  askProjectStream,
   alignProject,
   buildVectors,
   createProject,
@@ -54,6 +54,8 @@ export default function App() {
   const [createError, setCreateError] = useState<string | null>(null);
   const [chatError, setChatError] = useState<string | null>(null);
   const [pipelineError, setPipelineError] = useState<string | null>(null);
+  const [streamingAnswer, setStreamingAnswer] = useState<string | null>(null);
+  const [isStreaming, setIsStreaming] = useState(false);
 
   const copy = {
     zh: {
@@ -163,7 +165,7 @@ export default function App() {
   useEffect(() => {
     if (!selectedId) return;
     chatEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [selectedId, qaLog.length]);
+  }, [selectedId, qaLog.length, streamingAnswer, isStreaming]);
 
   useEffect(() => {
     if (!createOpen) return;
@@ -191,6 +193,8 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    setIsStreaming(false);
+    setStreamingAnswer(null);
     if (!selectedId) {
       setSelectedProject(null);
       setQaLog([]);
@@ -309,19 +313,52 @@ export default function App() {
 
   async function handleAsk(e: React.FormEvent) {
     e.preventDefault();
-    if (!selectedId || !question.trim()) return;
+    if (!selectedId) return;
+
+    const submittedQuestion = question.trim();
+    if (!submittedQuestion) return;
+
     setChatError(null);
     setBusyAction("ask");
+    setIsStreaming(true);
+    setStreamingAnswer("");
+
+    let finalAnswer = "";
+
     try {
-      await askProject(selectedId, question.trim());
-      const qaResp = await getQaLog(selectedId);
-      setQaLog(qaResp.entries || []);
+      await askProjectStream(
+        selectedId,
+        submittedQuestion,
+        (chunk) => {
+          finalAnswer += chunk;
+          setStreamingAnswer((prev) => (prev ?? "") + chunk);
+        },
+        (answer) => {
+          finalAnswer = answer;
+        },
+        (error) => {
+          throw new Error(error);
+        },
+      );
+
+      setQaLog((prev) => [
+        ...prev,
+        {
+          question: submittedQuestion,
+          answer: finalAnswer,
+          created_at: new Date().toISOString(),
+          evidence: [],
+        },
+      ]);
+
       setQuestion("");
     } catch (err) {
       if (err instanceof Error) {
         setChatError(err.message);
       }
     } finally {
+      setIsStreaming(false);
+      setStreamingAnswer(null);
       setBusyAction(null);
     }
   }
@@ -603,6 +640,17 @@ export default function App() {
                   </div>
                 </div>
               ))
+            )}
+            {isStreaming && streamingAnswer !== null && (
+              <div className="chat-turn" key="__streaming__">
+                <div className="msg msg-user">{question.trim()}</div>
+                <div className="msg msg-assistant markdown-body">
+                  <div className="msg-meta" style={{ marginTop: 0, marginBottom: 8 }}>
+                    <span>●</span> {lang === "zh" ? "生成中..." : "typing..."}
+                  </div>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{streamingAnswer}</ReactMarkdown>
+                </div>
+              </div>
             )}
             <div ref={chatEndRef} />
           </div>
