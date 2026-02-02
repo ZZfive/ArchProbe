@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   askProject,
   alignProject,
@@ -7,24 +9,22 @@ import {
   deleteProject,
   getProject,
   getQaLog,
-  getSummary,
   indexCode,
   ingestProject,
   listProjects,
   Project,
 } from "./api";
 
-type SummaryState = { text: string; error?: string };
-
 export default function App() {
   const [lang, setLang] = useState<"zh" | "en">("zh");
   const [guideOpen, setGuideOpen] = useState(false);
+  const [projectsOpen, setProjectsOpen] = useState(false);
+  const [detailOpen, setDetailOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [createStep, setCreateStep] = useState<1 | 2>(1);
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
-  const [summary, setSummary] = useState<SummaryState>({ text: "" });
   const [qaLog, setQaLog] = useState<
     Array<{
       question: string;
@@ -51,7 +51,9 @@ export default function App() {
     null | "create" | "delete" | "ingest" | "index" | "align" | "vectors" | "ask"
   >(null);
   const [form, setForm] = useState({ name: "", paper_url: "", repo_url: "", focus_points: "" });
-  const [error, setError] = useState<string | null>(null);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [chatError, setChatError] = useState<string | null>(null);
+  const [pipelineError, setPipelineError] = useState<string | null>(null);
 
   const copy = {
     zh: {
@@ -73,30 +75,27 @@ export default function App() {
       paperHash: "\u8bba\u6587\u54c8\u5e0c",
       repoHash: "\u4ed3\u5e93\u54c8\u5e0c",
       alignment: "\u5bf9\u7167\u6587\u4ef6",
-      summary: "\u9879\u76ee\u6c89\u6dc0",
       ask: "\u8be2\u95ee",
       question: "\u95ee\u9898",
-      submit: "\u63d0\u4ea4\u95ee\u9898",
+      submit: "\u53d1\u9001",
       emptyProjects: "\u6682\u65e0\u9879\u76ee",
       selectProject: "\u8bf7\u9009\u62e9\u9879\u76ee\u67e5\u770b\u8be6\u60c5\u3002",
-      noSummary: "\u6682\u65e0\u6c89\u6dc0\u5185\u5bb9\u3002",
       noQuestions: "\u6682\u65e0\u95ee\u7b54\u3002",
       working: "\u5904\u7406\u4e2d...",
       done: "\u5df2\u5b8c\u6210",
       pipelineHint:
-        "\u8bf7\u6309 1\u21922\u21923\u21924 \u7684\u987a\u5e8f\u6267\u884c\u3002\u5df2\u5b8c\u6210\u7684\u6b65\u9aa4\u4f1a\u81ea\u52a8\u7981\u7528\uff0c\u907f\u514d\u91cd\u590d\u6267\u884c\u3002",
+        "\u8bf7\u6309 1\u21922\u21923\u21924 \u7684\u987a\u5e8f\u6267\u884c\uff0c\u6bcf\u4e00\u6b65\u90fd\u9700\u8981\u524d\u4e00\u6b65\u5b8c\u6210\u540e\u624d\u80fd\u8fdb\u884c\u3002",
       deleteProject: "\u5220\u9664\u9879\u76ee",
       deleteConfirm:
         "\u786e\u5b9a\u5220\u9664\u8be5\u9879\u76ee\u5417\uff1f\u8fd9\u4f1a\u5220\u9664\u9879\u76ee\u7684\u6240\u6709\u6587\u4ef6\u4e0e\u6570\u636e\uff0c\u4e14\u4e0d\u53ef\u6062\u590d\u3002",
       guideTitle: "\u4f7f\u7528\u6307\u5357",
       guideToggle: "\u70b9\u51fb\u67e5\u770b\u6216\u6536\u8d77",
+      guideHint: "\u6309 1\u21922\u21923\u21924 \u987a\u5e8f\u6267\u884c\uff0c\u524d\u4e00\u6b65\u5b8c\u6210\u540e\u624d\u80fd\u7ee7\u7eed\u3002",
       guideSteps: [
-        "1. \u521b\u5efa\u9879\u76ee\uff1a\u8f93\u5165\u8bba\u6587\u548c\u4ed3\u5e93\u94fe\u63a5\u3002",
-        "2. \u70b9\u51fb\u89e3\u6790\u8bba\u6587\uff0c\u751f\u6210\u6bb5\u843d\u7ed3\u6784\u3002",
-        "3. \u7d22\u5f15\u4ee3\u7801\uff0c\u751f\u6210\u6587\u4ef6\u3001\u7b26\u53f7\u548c\u6587\u672c\u7d22\u5f15\u3002",
-        "4. \u5bf9\u7167\u7ed3\u679c\u7528\u4e8e\u627e\u5230\u6bb5\u843d\u4e0e\u4ee3\u7801\u8fde\u63a5\u3002",
-        "5. \u6784\u5efa\u5411\u91cf\u7528\u4e8e\u68c0\u7d22\u6587\u672c\u3002",
-        "6. \u63d0\u4ea4\u95ee\u9898\uff0c\u4f1a\u4fdd\u5b58\u95ee\u7b54\u548c\u8bc1\u636e\u3002",
+        "\u6b65\u9aa4 1\uff1a\u89e3\u6790\u8bba\u6587\uff08\u524d\u63d0\uff1a\u5df2\u521b\u5efa\u9879\u76ee\uff09\u2192 \u751f\u6210\u6bb5\u843d\u7ed3\u6784",
+        "\u6b65\u9aa4 2\uff1a\u7d22\u5f15\u4ee3\u7801\uff08\u524d\u63d0\uff1a\u5df2\u89e3\u6790\u8bba\u6587\uff09\u2192 \u751f\u6210\u6587\u4ef6\u7d22\u5f15",
+        "\u6b65\u9aa4 3\uff1a\u5bf9\u7167\uff08\u524d\u63d0\uff1a\u5df2\u7d22\u5f15\u4ee3\u7801\uff09\u2192 \u5173\u8054\u6bb5\u843d\u4e0e\u4ee3\u7801",
+        "\u6b65\u9aa4 4\uff1a\u6784\u5efa\u5411\u91cf\uff08\u524d\u63d0\uff1a\u5df2\u5bf9\u7167\uff09\u2192 \u7528\u4e8e\u68c0\u7d22\u95ee\u7b54",
       ],
     },
     en: {
@@ -118,35 +117,35 @@ export default function App() {
       paperHash: "Paper hash",
       repoHash: "Repo hash",
       alignment: "Alignment",
-      summary: "Project Summary",
       ask: "Ask a Question",
       question: "Question",
-      submit: "Submit question",
+      submit: "Send",
       emptyProjects: "No projects yet.",
       selectProject: "Select a project to view details.",
-      noSummary: "No summary yet.",
       noQuestions: "No questions yet.",
       working: "Working...",
       done: "Done",
-      pipelineHint: "Run steps in order 1\u21922\u21923\u21924. Completed steps are disabled to prevent re-runs.",
+      pipelineHint: "Run steps in order 1\u21922\u21923\u21924. Each step requires the previous one to be completed first.",
       deleteProject: "Delete project",
       deleteConfirm: "Delete this project? This will remove all project files and cannot be undone.",
       guideTitle: "Usage Guide",
       guideToggle: "Click to expand or collapse",
+      guideHint: "Run steps 1\u21922\u21923\u21924 in order. Complete previous step before proceeding.",
       guideSteps: [
-        "1. Create a project with paper and repo URLs.",
-        "2. Ingest the paper to parse paragraphs.",
-        "3. Index the code for files, symbols, and text.",
-        "4. Align to link paragraphs with code.",
-        "5. Build vectors for retrieval.",
-        "6. Ask questions and persist evidence.",
+        "Step 1: Ingest paper (prereq: project created) \u2192 parse paragraphs",
+        "Step 2: Index code (prereq: paper ingested) \u2192 build file index",
+        "Step 3: Align (prereq: code indexed) \u2192 link paragraphs with code",
+        "Step 4: Build vectors (prereq: aligned) \u2192 enable Q&A retrieval",
       ],
     },
   } as const;
 
   const t = copy[lang];
 
-  const isBusy = loadingProject || busyAction !== null;
+  const isBusyGlobal = loadingProject || busyAction !== null;
+  const isBusyPipeline = busyAction === "delete" || busyAction === "ingest" || busyAction === "index" || busyAction === "align" || busyAction === "vectors";
+  const isBusyChat = busyAction === "ask";
+  const isBusyCreate = busyAction === "create";
 
   const ingestDone = Boolean(selectedProject?.paper_hash);
   const indexDone = Boolean(selectedProject?.repo_hash);
@@ -188,31 +187,29 @@ export default function App() {
   }
 
   useEffect(() => {
-    refreshProjects().catch((err) => setError(err.message));
+    refreshProjects().catch((err) => setPipelineError(err.message));
   }, []);
 
   useEffect(() => {
     if (!selectedId) {
       setSelectedProject(null);
-      setSummary({ text: "" });
       setQaLog([]);
       return;
     }
     setLoadingProject(true);
-    Promise.all([getProject(selectedId), getSummary(selectedId), getQaLog(selectedId)])
-      .then(([project, summaryResp, qaResp]) => {
+    Promise.all([getProject(selectedId), getQaLog(selectedId)])
+      .then(([project, qaResp]) => {
         setSelectedProject(project);
-        setSummary({ text: summaryResp.summary || "" });
         setQaLog(qaResp.entries || []);
       })
       .catch((err) => {
-        setError(err.message);
+        setPipelineError(err.message);
       })
       .finally(() => setLoadingProject(false));
   }, [selectedId]);
 
   function openCreate() {
-    setError(null);
+    setCreateError(null);
     setCreateStep(1);
     setCreateOpen(true);
   }
@@ -223,7 +220,7 @@ export default function App() {
   }
 
   async function submitCreate() {
-    setError(null);
+    setCreateError(null);
     setBusyAction("create");
     try {
       const created = await createProject({
@@ -238,7 +235,7 @@ export default function App() {
       closeCreate();
     } catch (err) {
       if (err instanceof Error) {
-        setError(err.message);
+        setCreateError(err.message);
       }
     } finally {
       setBusyAction(null);
@@ -257,18 +254,17 @@ export default function App() {
   async function handleDeleteSelected() {
     if (!selectedId) return;
     if (!window.confirm(t.deleteConfirm)) return;
-    setError(null);
+    setPipelineError(null);
     setBusyAction("delete");
     try {
       await deleteProject(selectedId);
       setSelectedId(null);
       setSelectedProject(null);
-      setSummary({ text: "" });
       setQaLog([]);
       await refreshProjects();
     } catch (err) {
       if (err instanceof Error) {
-        setError(err.message);
+        setPipelineError(err.message);
       }
     } finally {
       setBusyAction(null);
@@ -277,19 +273,17 @@ export default function App() {
 
   async function handleIngest() {
     if (!selectedId) return;
-    setError(null);
+    setPipelineError(null);
     setBusyAction("ingest");
     try {
       await ingestProject(selectedId);
       const project = await getProject(selectedId);
-      const summaryResp = await getSummary(selectedId);
       const qaResp = await getQaLog(selectedId);
       setSelectedProject(project);
-      setSummary({ text: summaryResp.summary || "" });
       setQaLog(qaResp.entries || []);
     } catch (err) {
       if (err instanceof Error) {
-        setError(err.message);
+        setPipelineError(err.message);
       }
     } finally {
       setBusyAction(null);
@@ -298,7 +292,7 @@ export default function App() {
 
   async function handleIndexCode() {
     if (!selectedId) return;
-    setError(null);
+    setPipelineError(null);
     setBusyAction("index");
     try {
       await indexCode(selectedId);
@@ -306,7 +300,7 @@ export default function App() {
       setSelectedProject(project);
     } catch (err) {
       if (err instanceof Error) {
-        setError(err.message);
+        setPipelineError(err.message);
       }
     } finally {
       setBusyAction(null);
@@ -316,18 +310,16 @@ export default function App() {
   async function handleAsk(e: React.FormEvent) {
     e.preventDefault();
     if (!selectedId || !question.trim()) return;
-    setError(null);
+    setChatError(null);
     setBusyAction("ask");
     try {
       await askProject(selectedId, question.trim());
-      const summaryResp = await getSummary(selectedId);
       const qaResp = await getQaLog(selectedId);
-      setSummary({ text: summaryResp.summary || "" });
       setQaLog(qaResp.entries || []);
       setQuestion("");
     } catch (err) {
       if (err instanceof Error) {
-        setError(err.message);
+        setChatError(err.message);
       }
     } finally {
       setBusyAction(null);
@@ -336,7 +328,7 @@ export default function App() {
 
   async function handleAlign() {
     if (!selectedId) return;
-    setError(null);
+    setPipelineError(null);
     setBusyAction("align");
     try {
       await alignProject(selectedId);
@@ -344,7 +336,7 @@ export default function App() {
       setSelectedProject(project);
     } catch (err) {
       if (err instanceof Error) {
-        setError(err.message);
+        setPipelineError(err.message);
       }
     } finally {
       setBusyAction(null);
@@ -353,7 +345,7 @@ export default function App() {
 
   async function handleBuildVectors() {
     if (!selectedId) return;
-    setError(null);
+    setPipelineError(null);
     setBusyAction("vectors");
     try {
       await buildVectors(selectedId);
@@ -361,7 +353,7 @@ export default function App() {
       setSelectedProject(project);
     } catch (err) {
       if (err instanceof Error) {
-        setError(err.message);
+        setPipelineError(err.message);
       }
     } finally {
       setBusyAction(null);
@@ -396,103 +388,10 @@ export default function App() {
       <div className="layout-two">
         <aside className="sidebar-shell">
           <div className="sidebar-actions">
-            <button className="primary" onClick={openCreate} disabled={isBusy}>
+            <button className="primary" onClick={openCreate} disabled={isBusyGlobal}>
               {t.createBtn}
             </button>
           </div>
-
-          <section className="card">
-            <h2>{t.projects}</h2>
-            <div className="project-list">
-              {projects.map((project) => (
-                <button
-                  key={project.id}
-                  className={project.id === selectedId ? "project active" : "project"}
-                  onClick={() => setSelectedId(project.id)}
-                >
-                  <div className="project-name">{project.name}</div>
-                  <div className="project-meta">{project.paper_url}</div>
-                </button>
-              ))}
-              {projects.length === 0 && <div className="empty">{t.emptyProjects}</div>}
-            </div>
-          </section>
-
-          <section className="card">
-            <div className="card-header">
-              <h2>{t.detail}</h2>
-              <button
-                className="danger"
-                onClick={handleDeleteSelected}
-                disabled={!selectedId || isBusy}
-              >
-                {busyAction === "delete" ? t.working : t.deleteProject}
-              </button>
-            </div>
-            <div className="button-row" style={{ marginTop: 8, flexWrap: "wrap" }}>
-              <button
-                className="ghost"
-                onClick={handleIngest}
-                disabled={!selectedId || isBusy || ingestDone}
-              >
-                {busyAction === "ingest" ? t.working : `1. ${t.ingest}${ingestDone ? ` (${t.done})` : ""}`}
-              </button>
-              <button
-                className="ghost"
-                onClick={handleIndexCode}
-                disabled={!selectedId || isBusy || !ingestDone || indexDone}
-              >
-                {busyAction === "index" ? t.working : `2. ${t.indexCode}${indexDone ? ` (${t.done})` : ""}`}
-              </button>
-              <button
-                className="ghost"
-                onClick={handleAlign}
-                disabled={!selectedId || isBusy || !ingestDone || !indexDone || alignDone}
-              >
-                {busyAction === "align" ? t.working : `3. ${t.align}${alignDone ? ` (${t.done})` : ""}`}
-              </button>
-              <button
-                className="ghost"
-                onClick={handleBuildVectors}
-                disabled={!selectedId || isBusy || !ingestDone || !indexDone || vectorsDone}
-              >
-                {busyAction === "vectors"
-                  ? t.working
-                  : `4. ${t.buildVectors}${vectorsDone ? ` (${t.done})` : ""}`}
-              </button>
-            </div>
-            <p className="pipeline-hint">{t.pipelineHint}</p>
-
-            {selectedProject ? (
-              <div className="detail-grid">
-                <div>
-                  <p className="label">{t.paperHash}</p>
-                  <p className="mono">{selectedProject.paper_hash || "-"}</p>
-                </div>
-                <div>
-                  <p className="label">{t.repoHash}</p>
-                  <p className="mono">{selectedProject.repo_hash || "-"}</p>
-                </div>
-                <div>
-                  <p className="label">{t.alignment}</p>
-                  <p className="mono">{selectedProject.alignment_path || "-"}</p>
-                </div>
-                <div>
-                  <p className="label">{t.buildVectors}</p>
-                  <p>{vectorsDone ? t.done : "-"}</p>
-                </div>
-              </div>
-            ) : (
-              <p className="empty">{t.selectProject}</p>
-            )}
-          </section>
-
-          <section className="card">
-            <h2>{t.summary}</h2>
-            <div className="summary">
-              {summary.text ? <pre>{summary.text}</pre> : <p className="empty">{t.noSummary}</p>}
-            </div>
-          </section>
 
           <section className="card">
             <div className="card-header">
@@ -501,6 +400,7 @@ export default function App() {
                 {t.guideToggle}
               </button>
             </div>
+            {!guideOpen && <p className="hint">{t.guideHint}</p>}
             {guideOpen && (
               <div className="guide">
                 {t.guideSteps.map((step) => (
@@ -508,6 +408,154 @@ export default function App() {
                 ))}
               </div>
             )}
+          </section>
+
+          <section className="card">
+            <div className="card-header">
+              <h2>{t.projects}</h2>
+              <button className="ghost" onClick={() => setProjectsOpen(!projectsOpen)}>
+                {projectsOpen ? (lang === "zh" ? "收起" : "Collapse") : (lang === "zh" ? "展开" : "Expand")}
+              </button>
+            </div>
+            {!projectsOpen && (
+              <p className="hint">
+                {projects.length > 0
+                  ? `${projects.length} ${lang === "zh" ? "个项目" : "projects"}${
+                      selectedId
+                        ? ` | ${lang === "zh" ? "当前" : "Current"}: ${
+                            projects.find((p) => p.id === selectedId)?.name || ""
+                          }`
+                        : ""
+                    }`
+                  : t.emptyProjects}
+              </p>
+            )}
+            {projectsOpen && (
+              <div className="project-list">
+                {projects.map((project) => (
+                  <button
+                    key={project.id}
+                    className={project.id === selectedId ? "project active" : "project"}
+                    onClick={() => setSelectedId(project.id)}
+                  >
+                    <div className="project-name">{project.name}</div>
+                    <div className="project-meta">{project.paper_url}</div>
+                  </button>
+                ))}
+                {projects.length === 0 && <div className="empty">{t.emptyProjects}</div>}
+              </div>
+            )}
+          </section>
+
+          {selectedId && (
+            <section className="card">
+              <div className="card-header">
+                <h2>{t.detail}</h2>
+                <button
+                  className="danger"
+                  onClick={handleDeleteSelected}
+                  disabled={isBusyPipeline}
+                >
+                  {busyAction === "delete" ? t.working : t.deleteProject}
+                </button>
+              </div>
+              <div className="button-grid">
+                <button
+                  className="ghost"
+                  onClick={handleIngest}
+                  disabled={isBusyPipeline || ingestDone}
+                >
+                  {busyAction === "ingest" ? t.working : `1. ${t.ingest}${ingestDone ? ` (${t.done})` : ""}`}
+                </button>
+                <button
+                  className="ghost"
+                  onClick={handleIndexCode}
+                  disabled={isBusyPipeline || !ingestDone || indexDone}
+                >
+                  {busyAction === "index" ? t.working : `2. ${t.indexCode}${indexDone ? ` (${t.done})` : ""}`}
+                </button>
+                <button
+                  className="ghost"
+                  onClick={handleAlign}
+                  disabled={isBusyPipeline || !ingestDone || !indexDone || alignDone}
+                >
+                  {busyAction === "align" ? t.working : `3. ${t.align}${alignDone ? ` (${t.done})` : ""}`}
+                </button>
+                <button
+                  className="ghost"
+                  onClick={handleBuildVectors}
+                  disabled={isBusyPipeline || !ingestDone || !indexDone || vectorsDone}
+                >
+                  {busyAction === "vectors"
+                    ? t.working
+                    : `4. ${t.buildVectors}${vectorsDone ? ` (${t.done})` : ""}`}
+                </button>
+              </div>
+              <p className="pipeline-hint">{t.pipelineHint}</p>
+              {pipelineError && <div className="error" style={{ marginTop: 10 }}>{pipelineError}</div>}
+
+              <div className="card-header" style={{ marginTop: 12 }}>
+                <button className="ghost" onClick={() => setDetailOpen(!detailOpen)}>
+                  {detailOpen ? (lang === "zh" ? "隐藏详情" : "Hide details") : (lang === "zh" ? "显示详情" : "Show details")}
+                </button>
+              </div>
+              {detailOpen && selectedProject && (
+                <div className="detail-grid">
+                  <div>
+                    <p className="label">{t.paperHash}</p>
+                    <p className="mono">{selectedProject.paper_hash || "-"}</p>
+                  </div>
+                  <div>
+                    <p className="label">{t.repoHash}</p>
+                    <p className="mono">{selectedProject.repo_hash || "-"}</p>
+                  </div>
+                  <div>
+                    <p className="label">{t.alignment}</p>
+                    <p className="mono">{selectedProject.alignment_path || "-"}</p>
+                  </div>
+                  <div>
+                    <p className="label">{t.buildVectors}</p>
+                    <p>{vectorsDone ? t.done : "-"}</p>
+                  </div>
+                </div>
+              )}
+            </section>
+          )}
+
+          <section className="card">
+            <h2>{lang === "zh" ? "导出" : "Export"}</h2>
+            <div className="export-actions">
+              <button
+                className="ghost"
+                onClick={() => {
+                  if (!selectedProject) return;
+                  const content = [`# ${selectedProject.name}`,
+                    ``,
+                    `**${lang === "zh" ? "论文" : "Paper"}**: ${selectedProject.paper_url}`,
+                    `**${lang === "zh" ? "仓库" : "Repository"}**: ${selectedProject.repo_url}`,
+                    selectedProject.focus_points?.length ? `**${lang === "zh" ? "关注点" : "Focus"}**: ${selectedProject.focus_points.join(", ")}` : "",
+                    ``,
+                    `## ${lang === "zh" ? "对话记录" : "Conversation"}`,
+                    ...(qaLog.length ? qaLog.flatMap((entry, i) => [``, `### Q${i + 1}: ${entry.question}`, ``, entry.answer, ``, `*${new Date(entry.created_at).toLocaleString()}*`]) : [`${lang === "zh" ? "暂无问答记录" : "No Q&A records yet"}`]),
+                    ``,
+                    `## ${lang === "zh" ? "草稿" : "Draft"}`,
+                    question.trim() || (lang === "zh" ? "（无）" : "(none)"),
+                  ].filter(Boolean).join("\n");
+                  const blob = new Blob([content], { type: "text/markdown" });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = `${selectedProject.name}-${new Date().toISOString().slice(0, 16).replace(/[T:]/g, "-")}.md`;
+                  document.body.appendChild(a);
+                  a.click();
+                  document.body.removeChild(a);
+                  URL.revokeObjectURL(url);
+                }}
+                disabled={!selectedId}
+              >
+                {lang === "zh" ? "导出 Markdown" : "Export Markdown"}
+              </button>
+            </div>
           </section>
         </aside>
 
@@ -528,7 +576,7 @@ export default function App() {
             {!selectedId ? (
               <div className="empty-callout">
                 <p className="empty">{t.selectProject}</p>
-                <button className="primary" onClick={openCreate} disabled={isBusy}>
+                <button className="primary" onClick={openCreate} disabled={isBusyGlobal}>
                   {t.createBtn}
                 </button>
               </div>
@@ -538,8 +586,8 @@ export default function App() {
               qaLog.map((entry, index) => (
                 <div className="chat-turn" key={`${entry.created_at}-${index}`}>
                   <div className="msg msg-user">{entry.question}</div>
-                  <div className="msg msg-assistant">
-                    <div>{entry.answer}</div>
+                  <div className="msg msg-assistant markdown-body">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{entry.answer}</ReactMarkdown>
                     {entry.evidence && entry.evidence.length > 0 && (
                       <div className="msg-evidence">
                         {entry.evidence.slice(0, 2).map((ev, evIndex) => (
@@ -565,15 +613,15 @@ export default function App() {
                 value={question}
                 onChange={(e) => setQuestion(e.target.value)}
                 placeholder="What positional encoding is used and why?"
-                disabled={!selectedId || isBusy}
+                disabled={!selectedId || isBusyChat}
               />
-              <button type="submit" className="primary" disabled={!selectedId || isBusy}>
+              <button type="submit" className="primary" disabled={!selectedId || isBusyChat}>
                 {busyAction === "ask" ? t.working : t.submit}
               </button>
             </div>
           </form>
 
-          {error && <div className="error chat-error">{error}</div>}
+          {chatError && <div className="error chat-error">{chatError}</div>}
         </main>
       </div>
 
@@ -657,14 +705,14 @@ export default function App() {
                 </>
               )}
 
-              {error && <div className="error">{error}</div>}
+              {createError && <div className="error">{createError}</div>}
 
               <div className="modal-footer">
                 <button
                   type="button"
                   className="ghost"
                   onClick={() => (createStep === 1 ? closeCreate() : setCreateStep(1))}
-                  disabled={isBusy}
+                  disabled={isBusyCreate}
                 >
                   {createStep === 1
                     ? (lang === "zh" ? "取消" : "Cancel")
@@ -675,12 +723,12 @@ export default function App() {
                     type="button"
                     className="primary"
                     onClick={() => setCreateStep(2)}
-                    disabled={isBusy || !form.name.trim() || !form.paper_url.trim() || !form.repo_url.trim()}
+                    disabled={isBusyCreate || !form.name.trim() || !form.paper_url.trim() || !form.repo_url.trim()}
                   >
                     {lang === "zh" ? "下一步" : "Next"}
                   </button>
                 ) : (
-                  <button type="submit" className="primary" disabled={isBusy}>
+                  <button type="submit" className="primary" disabled={isBusyCreate}>
                     {busyAction === "create" ? t.working : t.createBtn}
                   </button>
                 )}
