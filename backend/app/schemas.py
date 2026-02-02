@@ -27,6 +27,15 @@ class ProjectDetail(ProjectOut):
     paper_parsed_path: Optional[str] = None
     code_index_path: Optional[str] = None
     alignment_path: Optional[str] = None
+    paper_vector_path: Optional[str] = None
+    code_vector_path: Optional[str] = None
+    paper_bm25_path: Optional[str] = None
+    code_bm25_path: Optional[str] = None
+
+
+class ProjectDeleteResponse(BaseModel):
+    project_id: str
+    deleted: bool
 
 
 class IngestResponse(BaseModel):

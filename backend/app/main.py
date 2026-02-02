@@ -1,6 +1,7 @@
 import json
 import heapq
 import itertools
+import shutil
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import List
@@ -50,6 +51,7 @@ from .schemas import (
     CodeIndexResponse,
     IngestResponse,
     ProjectCreate,
+    ProjectDeleteResponse,
     ProjectDetail,
     ProjectOut,
     VectorIndexResponse,
@@ -187,7 +189,41 @@ def get_project(project_id: str) -> ProjectDetail:
         paper_parsed_path=row["paper_parsed_path"],
         code_index_path=row["code_index_path"],
         alignment_path=row["alignment_path"],
+        paper_vector_path=row["paper_vector_path"],
+        code_vector_path=row["code_vector_path"],
+        paper_bm25_path=row["paper_bm25_path"],
+        code_bm25_path=row["code_bm25_path"],
     )
+
+
+@app.delete("/projects/{project_id}", response_model=ProjectDeleteResponse)
+def delete_project(project_id: str) -> ProjectDeleteResponse:
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT id FROM projects WHERE id = ?", (project_id,)
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        # Delete DB row but only commit after filesystem cleanup succeeds.
+        conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+
+        project_dir = PROJECTS_DIR / project_id
+        try:
+            if project_dir.exists():
+                shutil.rmtree(project_dir)
+        except OSError as err:
+            conn.rollback()
+            raise HTTPException(
+                status_code=500, detail=f"Failed to delete project files: {err}"
+            )
+
+        conn.commit()
+    finally:
+        conn.close()
+
+    return ProjectDeleteResponse(project_id=project_id, deleted=True)
 
 
 @app.get("/projects/{project_id}/summary")
@@ -363,6 +399,27 @@ def align_project(project_id: str) -> AlignmentResponse:
     text_index_path = project_dir / "code" / "text_index.json"
     alignment_path = project_dir / "alignment" / "map.json"
 
+    existing_alignment_path = row["alignment_path"]
+    if existing_alignment_path:
+        existing_path = Path(existing_alignment_path)
+        if existing_path.exists():
+            try:
+                data = json.loads(existing_path.read_text(encoding="utf-8"))
+                raw_count = data.get("match_count", "0")
+            except json.JSONDecodeError:
+                raw_count = "0"
+            if isinstance(raw_count, int):
+                match_count = raw_count
+            elif isinstance(raw_count, str) and raw_count.isdigit():
+                match_count = int(raw_count)
+            else:
+                match_count = 0
+            return AlignmentResponse(
+                project_id=project_id,
+                alignment_path=str(existing_path),
+                match_count=match_count,
+            )
+
     if (
         not parsed_path.exists()
         or not symbol_path.exists()
@@ -445,19 +502,77 @@ def build_vector_indices(project_id: str) -> VectorIndexResponse:
             }
         )
 
-    paper_index = build_vector_index(paper_docs)
-    code_index = build_vector_index(code_docs)
     paper_index_path = project_dir / "paper" / "vector_index.json"
     code_index_path = project_dir / "code" / "vector_index.json"
+    paper_bm25_path = project_dir / "paper" / "bm25_index.json"
+    code_bm25_path = project_dir / "code" / "bm25_index.json"
+    if (
+        paper_index_path.exists()
+        and code_index_path.exists()
+        and paper_bm25_path.exists()
+        and code_bm25_path.exists()
+    ):
+        now = datetime.now(timezone.utc).isoformat()
+        conn = get_connection()
+        try:
+            conn.execute(
+                """
+                UPDATE projects
+                SET paper_vector_path = ?, code_vector_path = ?, paper_bm25_path = ?, code_bm25_path = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    str(paper_index_path),
+                    str(code_index_path),
+                    str(paper_bm25_path),
+                    str(code_bm25_path),
+                    now,
+                    project_id,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        return VectorIndexResponse(
+            project_id=project_id,
+            paper_index_path=str(paper_index_path),
+            code_index_path=str(code_index_path),
+            paper_bm25_path=str(paper_bm25_path),
+            code_bm25_path=str(code_bm25_path),
+        )
+
+    paper_index = build_vector_index(paper_docs)
+    code_index = build_vector_index(code_docs)
     write_vector_index(paper_index_path, paper_index)
     write_vector_index(code_index_path, code_index)
 
     paper_bm25 = build_bm25_index(paper_docs)
     code_bm25 = build_bm25_index(code_docs)
-    paper_bm25_path = project_dir / "paper" / "bm25_index.json"
-    code_bm25_path = project_dir / "code" / "bm25_index.json"
     write_bm25_index(paper_bm25_path, paper_bm25)
     write_bm25_index(code_bm25_path, code_bm25)
+
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            UPDATE projects
+            SET paper_vector_path = ?, code_vector_path = ?, paper_bm25_path = ?, code_bm25_path = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                str(paper_index_path),
+                str(code_index_path),
+                str(paper_bm25_path),
+                str(code_bm25_path),
+                now,
+                project_id,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
     return VectorIndexResponse(
         project_id=project_id,

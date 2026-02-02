@@ -13,6 +13,10 @@ export type Project = {
   paper_parsed_path?: string | null;
   code_index_path?: string | null;
   alignment_path?: string | null;
+  paper_vector_path?: string | null;
+  code_vector_path?: string | null;
+  paper_bm25_path?: string | null;
+  code_bm25_path?: string | null;
 };
 
 export async function listProjects(): Promise<Project[]> {
@@ -163,4 +167,13 @@ export async function buildVectors(projectId: string): Promise<{
     throw new Error("Failed to build vector indices");
   }
   return res.json();
+}
+
+export async function deleteProject(projectId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/projects/${projectId}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    throw new Error("Failed to delete project");
+  }
 }

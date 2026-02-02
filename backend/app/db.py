@@ -26,7 +26,11 @@ def init_db() -> None:
                 repo_hash TEXT,
                 paper_parsed_path TEXT,
                 code_index_path TEXT,
-                alignment_path TEXT
+                alignment_path TEXT,
+                paper_vector_path TEXT,
+                code_vector_path TEXT,
+                paper_bm25_path TEXT,
+                code_bm25_path TEXT
             );
             """
         )
@@ -45,6 +49,10 @@ def init_db() -> None:
             ("paper_parsed_path", "TEXT"),
             ("code_index_path", "TEXT"),
             ("alignment_path", "TEXT"),
+            ("paper_vector_path", "TEXT"),
+            ("code_vector_path", "TEXT"),
+            ("paper_bm25_path", "TEXT"),
+            ("code_bm25_path", "TEXT"),
         ]
 
         # Add missing columns safely
