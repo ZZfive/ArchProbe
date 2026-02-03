@@ -77,3 +77,19 @@ Thumbs.db
 
 projects/
 debug/
+
+############################
+# Runtime / Local data
+############################
+
+# Sisyphus workspace
+.sisyphus/
+
+# TypeScript build info
+*.tsbuildinfo
+
+# Backend SQLite database
+backend/app.db
+backend/app.db-journal
+backend/app.db-wal
+backend/app.db-shm
