@@ -80,3 +80,26 @@ class AskResponse(BaseModel):
     answer: str
     confidence: float
     created_at: datetime
+
+
+class OverviewResponse(BaseModel):
+    project_id: str
+    content: str
+    version: str
+    generated_at: datetime
+
+
+class CodeFileResponse(BaseModel):
+    project_id: str
+    path: str
+    content: str
+    language: str
+
+
+class CodeSnippetResponse(BaseModel):
+    project_id: str
+    path: str
+    content: str
+    language: str
+    start_line: int
+    end_line: int

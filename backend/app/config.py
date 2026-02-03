@@ -3,6 +3,7 @@ from pathlib import Path
 
 try:
     from dotenv import load_dotenv
+
     load_dotenv()
 except ImportError:
     pass
@@ -49,6 +50,6 @@ CODE_INDEX_IGNORE_EXTS = set(
     if part.strip()
 )
 
-PAPER_MAX_PDF_BYTES = _env_int("PAPER_MAX_PDF_BYTES", 50_000_000)
+PAPER_MAX_PDF_BYTES = _env_int("PAPER_MAX_PDF_BYTES", 100_000_000)
 PAPER_MAX_PAGES = _env_int("PAPER_MAX_PAGES", 200)
 PAPER_MAX_PARAGRAPHS = _env_int("PAPER_MAX_PARAGRAPHS", 5000)

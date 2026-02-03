@@ -3,10 +3,17 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   askProjectStream,
+  abortAskProjectStream,
+  abortOverviewStream,
   alignProject,
   buildVectors,
   createProject,
   deleteProject,
+  generateOverviewFull,
+  generateOverviewQuick,
+  getCodeFile,
+  getCodeSnippet,
+  getOverview,
   getProject,
   getQaLog,
   indexCode,
@@ -16,6 +23,14 @@ import {
 } from "./api";
 
 export default function App() {
+  type CodeRef = {
+    path: string;
+    line: number;
+    name: string;
+    start_line: number;
+    end_line: number;
+  };
+
   const [lang, setLang] = useState<"zh" | "en">("zh");
   const [guideOpen, setGuideOpen] = useState(false);
   const [projectsOpen, setProjectsOpen] = useState(false);
@@ -30,6 +45,7 @@ export default function App() {
       question: string;
       answer: string;
       created_at: string;
+      code_refs?: CodeRef[];
       evidence?: Array<{
         kind?: string;
         path?: string;
@@ -57,6 +73,25 @@ export default function App() {
   const [streamingAnswer, setStreamingAnswer] = useState<string | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
 
+  type CodeSnippetState = {
+    content: string;
+    language: string;
+    loading: boolean;
+    error?: string;
+  };
+
+  const [codeSnippets, setCodeSnippets] = useState<Record<string, CodeSnippetState>>({});
+  const [selectedCodeFile, setSelectedCodeFile] = useState<{ path: string; content: string } | null>(null);
+  const [showCodeViewer, setShowCodeViewer] = useState(false);
+  const [codeViewerHighlight, setCodeViewerHighlight] = useState<{ startLine: number; endLine: number } | null>(null);
+
+  const [activeTab, setActiveTab] = useState<"chat" | "overview">("chat");
+  const [overview, setOverview] = useState<string | null>(null);
+  const [overviewVersion, setOverviewVersion] = useState<string | null>(null);
+  const [isGeneratingOverview, setIsGeneratingOverview] = useState(false);
+  const [streamingOverview, setStreamingOverview] = useState<string | null>(null);
+  const [overviewError, setOverviewError] = useState<string | null>(null);
+
   const copy = {
     zh: {
       eyebrow: "\u8bba\u6587\u4ee3\u7801\u5bf9\u7167",
@@ -83,6 +118,12 @@ export default function App() {
       emptyProjects: "\u6682\u65e0\u9879\u76ee",
       selectProject: "\u8bf7\u9009\u62e9\u9879\u76ee\u67e5\u770b\u8be6\u60c5\u3002",
       noQuestions: "\u6682\u65e0\u95ee\u7b54\u3002",
+      chat: "\u5bf9\u8bdd",
+      overview: "\u9879\u76ee\u6982\u89c8",
+      overviewQuick: "\u751f\u6210\u5feb\u901f\u6982\u89c8",
+      overviewFull: "\u751f\u6210\u5b8c\u6574\u6982\u89c8",
+      overviewQuickDesc: "\u57fa\u4e8e README \u548c\u8bba\u6587\u6458\u8981\u5feb\u901f\u751f\u6210",
+      overviewFullDesc: "\u57fa\u4e8e\u5b8c\u6574\u8bba\u6587\u548c\u4ee3\u7801\u7ed3\u6784\u8be6\u7ec6\u751f\u6210",
       working: "\u5904\u7406\u4e2d...",
       done: "\u5df2\u5b8c\u6210",
       pipelineHint:
@@ -125,6 +166,12 @@ export default function App() {
       emptyProjects: "No projects yet.",
       selectProject: "Select a project to view details.",
       noQuestions: "No questions yet.",
+      chat: "Chat",
+      overview: "Project overview",
+      overviewQuick: "Generate quick overview",
+      overviewFull: "Generate full overview",
+      overviewQuickDesc: "Quick generation from README and paper abstract",
+      overviewFullDesc: "Detailed generation from full paper and code structure",
       working: "Working...",
       done: "Done",
       pipelineHint: "Run steps in order 1\u21922\u21923\u21924. Each step requires the previous one to be completed first.",
@@ -161,6 +208,52 @@ export default function App() {
 
   const chatEndRef = useRef<HTMLDivElement | null>(null);
   const createNameRef = useRef<HTMLInputElement | null>(null);
+  const selectedIdRef = useRef<string | null>(null);
+  const codeViewerBodyRef = useRef<HTMLDivElement | null>(null);
+  const askRunIdRef = useRef(0);
+  const overviewRunIdRef = useRef(0);
+
+  function isAbortError(err: unknown): boolean {
+    return (
+      (err instanceof DOMException && err.name === "AbortError") ||
+      (err instanceof Error && err.name === "AbortError")
+    );
+  }
+
+  useEffect(() => {
+    selectedIdRef.current = selectedId;
+  }, [selectedId]);
+
+  useEffect(() => {
+    return () => {
+      abortAskProjectStream();
+      abortOverviewStream();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!showCodeViewer) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        closeCodeViewer();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [showCodeViewer]);
+
+  useEffect(() => {
+    if (!showCodeViewer) return;
+    if (!selectedCodeFile) return;
+    if (!codeViewerHighlight) return;
+
+    window.setTimeout(() => {
+      const el = codeViewerBodyRef.current?.querySelector(
+        `[data-line='${codeViewerHighlight.startLine}']`
+      ) as HTMLElement | null;
+      el?.scrollIntoView({ block: "center" });
+    }, 0);
+  }, [codeViewerHighlight, selectedCodeFile, showCodeViewer]);
 
   useEffect(() => {
     if (!selectedId) return;
@@ -180,6 +273,100 @@ export default function App() {
     return trimmed.split(",").map((item) => item.trim()).filter(Boolean);
   }, [form.focus_points]);
 
+  function codeSnippetKey(projectId: string, ref: CodeRef): string {
+    return `${projectId}::${ref.path}::${ref.start_line}-${ref.end_line}`;
+  }
+
+  function getErrorMessage(err: unknown, fallback: string): string {
+    return err instanceof Error ? err.message : fallback;
+  }
+
+  async function fetchCodeSnippetForRef(
+    projectId: string,
+    ref: CodeRef,
+    opts?: { force?: boolean }
+  ): Promise<void> {
+    const force = Boolean(opts?.force);
+    const key = codeSnippetKey(projectId, ref);
+
+    let started = false;
+    setCodeSnippets((prev) => {
+      const existing = prev[key];
+      if (existing?.loading) return prev;
+      if (!force && existing && (existing.content || existing.error)) {
+        return prev;
+      }
+      started = true;
+      return {
+        ...prev,
+        [key]: {
+          content: "",
+          language: "",
+          loading: true,
+        },
+      };
+    });
+
+    if (!started) return;
+
+    try {
+      const resp = await getCodeSnippet(projectId, ref.path, ref.start_line, ref.end_line);
+      setCodeSnippets((prev) => ({
+        ...prev,
+        [key]: {
+          content: resp.content,
+          language: resp.language,
+          loading: false,
+        },
+      }));
+    } catch (err) {
+      setCodeSnippets((prev) => ({
+        ...prev,
+        [key]: {
+          content: "",
+          language: "text",
+          loading: false,
+          error: getErrorMessage(err, "Failed to load code snippet"),
+        },
+      }));
+    }
+  }
+
+  async function ensureCodeSnippetsForRefs(projectId: string, refs: CodeRef[]): Promise<void> {
+    const uniqueKeys = new Set<string>();
+    const uniqueRefs: CodeRef[] = [];
+    for (const ref of refs) {
+      const key = codeSnippetKey(projectId, ref);
+      if (uniqueKeys.has(key)) continue;
+      uniqueKeys.add(key);
+      uniqueRefs.push(ref);
+    }
+
+    await Promise.all(uniqueRefs.map((ref) => fetchCodeSnippetForRef(projectId, ref)));
+  }
+
+  async function openCodeViewerForRef(projectId: string, ref: CodeRef): Promise<void> {
+    setShowCodeViewer(true);
+    setSelectedCodeFile(null);
+    setCodeViewerHighlight({ startLine: ref.start_line, endLine: ref.end_line });
+
+    try {
+      const resp = await getCodeFile(projectId, ref.path);
+      if (selectedIdRef.current !== projectId) return;
+      setSelectedCodeFile({ path: resp.path, content: resp.content });
+    } catch (err) {
+      if (selectedIdRef.current !== projectId) return;
+      const message = err instanceof Error ? err.message : "Failed to load code file";
+      setSelectedCodeFile({ path: ref.path, content: `// ${message}` });
+    }
+  }
+
+  function closeCodeViewer() {
+    setShowCodeViewer(false);
+    setSelectedCodeFile(null);
+    setCodeViewerHighlight(null);
+  }
+
   async function refreshProjects() {
     const data = await listProjects();
     setProjects(data);
@@ -193,8 +380,19 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    askRunIdRef.current += 1;
+    overviewRunIdRef.current += 1;
+    abortAskProjectStream();
+    abortOverviewStream();
+
+    setBusyAction((prev) => (prev === "ask" ? null : prev));
+
     setIsStreaming(false);
     setStreamingAnswer(null);
+    setCodeSnippets({});
+    setShowCodeViewer(false);
+    setSelectedCodeFile(null);
+    setCodeViewerHighlight(null);
     if (!selectedId) {
       setSelectedProject(null);
       setQaLog([]);
@@ -210,6 +408,40 @@ export default function App() {
         setPipelineError(err.message);
       })
       .finally(() => setLoadingProject(false));
+  }, [selectedId]);
+
+  useEffect(() => {
+    if (!selectedId) return;
+    const refs = qaLog.flatMap((entry) => entry.code_refs || []);
+    if (refs.length === 0) return;
+    void ensureCodeSnippetsForRefs(selectedId, refs);
+  }, [qaLog, selectedId]);
+
+  useEffect(() => {
+    setOverview(null);
+    setOverviewVersion(null);
+    setStreamingOverview(null);
+    setIsGeneratingOverview(false);
+    setOverviewError(null);
+
+    if (!selectedId) return;
+
+    let cancelled = false;
+    getOverview(selectedId)
+      .then((resp) => {
+        if (cancelled) return;
+        setOverview(resp.content);
+        setOverviewVersion(resp.version);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setOverview(null);
+        setOverviewVersion(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [selectedId]);
 
   function openCreate() {
@@ -255,16 +487,24 @@ export default function App() {
     await submitCreate();
   }
 
-  async function handleDeleteSelected() {
-    if (!selectedId) return;
+  async function handleDeleteProject(projectId: string) {
     if (!window.confirm(t.deleteConfirm)) return;
     setPipelineError(null);
     setBusyAction("delete");
     try {
-      await deleteProject(selectedId);
-      setSelectedId(null);
-      setSelectedProject(null);
-      setQaLog([]);
+      await deleteProject(projectId);
+
+      if (selectedIdRef.current === projectId) {
+        setSelectedId(null);
+        setSelectedProject(null);
+        setQaLog([]);
+        setOverview(null);
+        setOverviewVersion(null);
+        setStreamingOverview(null);
+        setIsGeneratingOverview(false);
+        setOverviewError(null);
+      }
+
       await refreshProjects();
     } catch (err) {
       if (err instanceof Error) {
@@ -318,28 +558,42 @@ export default function App() {
     const submittedQuestion = question.trim();
     if (!submittedQuestion) return;
 
+    abortAskProjectStream();
+    askRunIdRef.current += 1;
+    const runId = askRunIdRef.current;
+    const projectId = selectedId;
+
     setChatError(null);
     setBusyAction("ask");
     setIsStreaming(true);
     setStreamingAnswer("");
 
     let finalAnswer = "";
+    let finalCodeRefs: CodeRef[] = [];
 
     try {
       await askProjectStream(
-        selectedId,
+        projectId,
         submittedQuestion,
         (chunk) => {
+          if (selectedIdRef.current !== projectId) return;
+          if (askRunIdRef.current !== runId) return;
           finalAnswer += chunk;
           setStreamingAnswer((prev) => (prev ?? "") + chunk);
         },
-        (answer) => {
-          finalAnswer = answer;
+        (result) => {
+          if (selectedIdRef.current !== projectId) return;
+          if (askRunIdRef.current !== runId) return;
+          finalAnswer = result.answer;
+          finalCodeRefs = result.code_refs || [];
         },
         (error) => {
           throw new Error(error);
-        },
+        }
       );
+
+      if (selectedIdRef.current !== projectId) return;
+      if (askRunIdRef.current !== runId) return;
 
       setQaLog((prev) => [
         ...prev,
@@ -347,19 +601,90 @@ export default function App() {
           question: submittedQuestion,
           answer: finalAnswer,
           created_at: new Date().toISOString(),
+          code_refs: finalCodeRefs,
           evidence: [],
         },
       ]);
 
+      if (finalCodeRefs.length > 0) {
+        void ensureCodeSnippetsForRefs(projectId, finalCodeRefs);
+      }
+
       setQuestion("");
     } catch (err) {
+      if (isAbortError(err)) return;
       if (err instanceof Error) {
         setChatError(err.message);
       }
     } finally {
+      if (askRunIdRef.current !== runId) return;
       setIsStreaming(false);
       setStreamingAnswer(null);
       setBusyAction(null);
+    }
+  }
+
+  async function generateOverview(mode: "quick" | "full") {
+    if (!selectedId) return;
+
+    const projectId = selectedId;
+    const runLang = lang;
+
+    abortOverviewStream();
+    overviewRunIdRef.current += 1;
+    const runId = overviewRunIdRef.current;
+
+    setOverviewError(null);
+    setIsGeneratingOverview(true);
+    setStreamingOverview("");
+
+    let fullContent = "";
+
+    try {
+      const fn = mode === "quick" ? generateOverviewQuick : generateOverviewFull;
+      await fn(
+        projectId,
+        runLang,
+        (chunk) => {
+          if (selectedIdRef.current !== projectId) return;
+          if (overviewRunIdRef.current !== runId) return;
+          fullContent += chunk;
+          setStreamingOverview((prev) => (prev ?? "") + chunk);
+        },
+        (version) => {
+          if (selectedIdRef.current !== projectId) return;
+          if (overviewRunIdRef.current !== runId) return;
+          setOverview(fullContent);
+          setOverviewVersion(version);
+        },
+        (error) => {
+          throw new Error(error);
+        }
+      );
+
+      if (selectedIdRef.current !== projectId) return;
+      if (overviewRunIdRef.current !== runId) return;
+
+      try {
+        const resp = await getOverview(projectId);
+        if (selectedIdRef.current !== projectId) return;
+        setOverview(resp.content);
+        setOverviewVersion(resp.version);
+      } catch {
+        // Best-effort refresh; keep streamed content.
+      }
+    } catch (err) {
+      if (selectedIdRef.current !== projectId) return;
+      if (overviewRunIdRef.current !== runId) return;
+      if (isAbortError(err)) return;
+      if (err instanceof Error) {
+        setOverviewError(err.message);
+      }
+    } finally {
+      if (selectedIdRef.current !== projectId) return;
+      if (overviewRunIdRef.current !== runId) return;
+      setIsGeneratingOverview(false);
+      setStreamingOverview(null);
     }
   }
 
@@ -469,16 +794,41 @@ export default function App() {
             )}
             {projectsOpen && (
               <div className="project-list">
-                {projects.map((project) => (
-                  <button
-                    key={project.id}
-                    className={project.id === selectedId ? "project active" : "project"}
-                    onClick={() => setSelectedId(project.id)}
-                  >
-                    <div className="project-name">{project.name}</div>
-                    <div className="project-meta">{project.paper_url}</div>
-                  </button>
-                ))}
+                {projects.map((project) => {
+                  const isActive = project.id === selectedId;
+                  return (
+                    <div
+                      key={project.id}
+                      className={isActive ? "project active" : "project"}
+                      role="button"
+                      tabIndex={0}
+                      aria-current={isActive ? "true" : undefined}
+                      onClick={() => setSelectedId(project.id)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          setSelectedId(project.id);
+                        }
+                      }}
+                    >
+                      <div className="project-name">{project.name}</div>
+                      <div className="project-meta">{project.paper_url}</div>
+                      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                        <button
+                          type="button"
+                          className="danger"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteProject(project.id);
+                          }}
+                          disabled={isBusyPipeline}
+                        >
+                          {busyAction === "delete" ? t.working : t.deleteProject}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
                 {projects.length === 0 && <div className="empty">{t.emptyProjects}</div>}
               </div>
             )}
@@ -488,12 +838,10 @@ export default function App() {
             <section className="card">
               <div className="card-header">
                 <h2>{t.detail}</h2>
-                <button
-                  className="danger"
-                  onClick={handleDeleteSelected}
-                  disabled={isBusyPipeline}
-                >
-                  {busyAction === "delete" ? t.working : t.deleteProject}
+                <button className="ghost" onClick={() => setDetailOpen(!detailOpen)} disabled={!selectedProject}>
+                  {detailOpen
+                    ? (lang === "zh" ? "隐藏详情" : "Hide details")
+                    : (lang === "zh" ? "显示详情" : "Show details")}
                 </button>
               </div>
               <div className="button-grid">
@@ -530,12 +878,6 @@ export default function App() {
               </div>
               <p className="pipeline-hint">{t.pipelineHint}</p>
               {pipelineError && <div className="error" style={{ marginTop: 10 }}>{pipelineError}</div>}
-
-              <div className="card-header" style={{ marginTop: 12 }}>
-                <button className="ghost" onClick={() => setDetailOpen(!detailOpen)}>
-                  {detailOpen ? (lang === "zh" ? "隐藏详情" : "Hide details") : (lang === "zh" ? "显示详情" : "Show details")}
-                </button>
-              </div>
               {detailOpen && selectedProject && (
                 <div className="detail-grid">
                   <div>
@@ -599,77 +941,275 @@ export default function App() {
         <main className="chat-shell">
           <div className="chat-header">
             <div>
-              <p className="eyebrow">{t.ask}</p>
+              <p className="eyebrow">{activeTab === "chat" ? t.chat : t.overview}</p>
               <h2 className="chat-title">{selectedProject ? selectedProject.name : t.selectProject}</h2>
             </div>
             <div className="chat-meta">
-              <span>
-                {qaLog.length} msgs | {pipelineProgress}/4
-              </span>
+              {activeTab === "chat" ? (
+                <span>
+                  {qaLog.length} msgs | {pipelineProgress}/4
+                </span>
+              ) : (
+                <span>
+                  {overviewVersion
+                    ? `v${overviewVersion}`
+                    : overview
+                      ? (lang === "zh" ? "已生成" : "Generated")
+                      : (lang === "zh" ? "未生成" : "Not generated")}
+                  {" "}| {pipelineProgress}/4
+                </span>
+              )}
             </div>
+          </div>
+
+          <div
+            style={{
+              display: "flex",
+              gap: 10,
+              padding: "10px 20px",
+              borderBottom: "1px solid rgba(210, 214, 230, 0.7)",
+              background: "rgba(255, 255, 255, 0.35)",
+            }}
+          >
+            <button
+              type="button"
+              className={activeTab === "chat" ? "primary" : "ghost"}
+              onClick={() => setActiveTab("chat")}
+            >
+              对话/Chat
+            </button>
+            <button
+              type="button"
+              className={activeTab === "overview" ? "primary" : "ghost"}
+              onClick={() => setActiveTab("overview")}
+            >
+              项目概览/Overview
+            </button>
           </div>
 
           <div className="chat-body">
-            {!selectedId ? (
-              <div className="empty-callout">
-                <p className="empty">{t.selectProject}</p>
-                <button className="primary" onClick={openCreate} disabled={isBusyGlobal}>
-                  {t.createBtn}
-                </button>
-              </div>
-            ) : qaLog.length === 0 ? (
-              <p className="empty">{t.noQuestions}</p>
-            ) : (
-              qaLog.map((entry, index) => (
-                <div className="chat-turn" key={`${entry.created_at}-${index}`}>
-                  <div className="msg msg-user">{entry.question}</div>
-                  <div className="msg msg-assistant markdown-body">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{entry.answer}</ReactMarkdown>
-                    {entry.evidence && entry.evidence.length > 0 && (
-                      <div className="msg-evidence">
-                        {entry.evidence.slice(0, 2).map((ev, evIndex) => (
-                          <div className="evidence-line" key={`${ev.path}-${evIndex}`}>
-                            <span className="mono">{ev.path || "unknown"}</span>
-                            {ev.name ? ` :: ${ev.name}` : ""}
-                            {ev.line ? ` (L${ev.line})` : ""}
+            {activeTab === "chat" ? (
+              <>
+                {!selectedId ? (
+                  <div className="empty-callout">
+                    <p className="empty">{t.selectProject}</p>
+                    <button className="primary" onClick={openCreate} disabled={isBusyGlobal}>
+                      {t.createBtn}
+                    </button>
+                  </div>
+                ) : qaLog.length === 0 ? (
+                  <p className="empty">{t.noQuestions}</p>
+                ) : (
+                  qaLog.map((entry, index) => (
+                    <div className="chat-turn" key={`${entry.created_at}-${index}`}>
+                      <div className="msg msg-user">{entry.question}</div>
+                      <div className="msg msg-assistant markdown-body">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{entry.answer}</ReactMarkdown>
+                        {entry.evidence && entry.evidence.length > 0 && (
+                          <div className="msg-evidence">
+                            {entry.evidence.slice(0, 2).map((ev, evIndex) => (
+                              <div className="evidence-line" key={`${ev.path}-${evIndex}`}>
+                                <span className="mono">{ev.path || "unknown"}</span>
+                                {ev.name ? ` :: ${ev.name}` : ""}
+                                {ev.line ? ` (L${ev.line})` : ""}
+                              </div>
+                            ))}
                           </div>
-                        ))}
+                        )}
+                        {(!entry.code_refs || entry.code_refs.length === 0) && (
+                          <p className="hint related-code-empty-hint">
+                            {lang === "zh"
+                              ? "未返回相关代码引用。通常需要先完成：索引代码（步骤 2）和对照（步骤 3），完成后再提问更容易得到“相关代码”。"
+                              : "No code references returned. Usually you need to run Code index (step 2) and Align (step 3), then ask again."}
+                          </p>
+                        )}
+                        {entry.code_refs && entry.code_refs.length > 0 && (
+                          <div className="related-code">
+                            <div className="related-code-header">
+                              <div className="related-code-title">相关代码 ({entry.code_refs.length})</div>
+                            </div>
+                            <div className="related-code-list">
+                              {entry.code_refs.map((ref, refIndex) => {
+                                const key = selectedId ? codeSnippetKey(selectedId, ref) : `${ref.path}::${ref.start_line}-${ref.end_line}`;
+                                const snippet = selectedId ? codeSnippets[key] : undefined;
+                                const snippetLines = snippet?.content ? snippet.content.split("\n") : [];
+
+                                return (
+                                  <div className="related-code-item" key={`${ref.path}-${ref.start_line}-${ref.end_line}-${refIndex}`}>
+                                    <div className="related-code-meta">
+                                      <div className="related-code-path mono">
+                                        {ref.path} (L{ref.line}){ref.name ? ` :: ${ref.name}` : ""}
+                                      </div>
+                                      <button
+                                        type="button"
+                                        className="ghost related-code-open"
+                                        onClick={() => {
+                                          if (!selectedId) return;
+                                          void openCodeViewerForRef(selectedId, ref);
+                                        }}
+                                        disabled={!selectedId}
+                                      >
+                                        查看完整文件
+                                      </button>
+                                    </div>
+
+                                    <div className="code-snippet" data-language={snippet?.language || ""}>
+                                      {!snippet || snippet.loading ? (
+                                        <div className="code-snippet-loading">加载代码片段...</div>
+                                      ) : snippet.error ? (
+                                        <div className="code-snippet-error">
+                                          <div className="code-snippet-error-message">{snippet.error}</div>
+                                          <div className="code-snippet-actions">
+                                            <button
+                                              type="button"
+                                              className="ghost code-snippet-retry"
+                                              onClick={() => {
+                                                if (!selectedId) return;
+                                                void fetchCodeSnippetForRef(selectedId, ref, { force: true });
+                                              }}
+                                            >
+                                              {lang === "zh" ? "重试" : "Retry"}
+                                            </button>
+                                          </div>
+                                        </div>
+                                      ) : snippet?.content ? (
+                                        <div className="code-lines" role="presentation">
+                                          {snippetLines.map((line, lineIndex) => (
+                                            <div className="code-line" key={`${key}-${lineIndex}`}>
+                                              <span className="code-lineno">{ref.start_line + lineIndex}</span>
+                                              <span className="code-content">{line || " "}</span>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      ) : (
+                                        <div className="code-snippet-loading">(暂无代码片段)</div>
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+                        <div className="msg-meta">{new Date(entry.created_at).toLocaleString()}</div>
+                      </div>
+                    </div>
+                  ))
+                )}
+                {isStreaming && streamingAnswer !== null && (
+                  <div className="chat-turn" key="__streaming__">
+                    <div className="msg msg-user">{question.trim()}</div>
+                    <div className="msg msg-assistant markdown-body">
+                      <div className="msg-meta" style={{ marginTop: 0, marginBottom: 8 }}>
+                        <span>●</span> {lang === "zh" ? "生成中..." : "typing..."}
+                      </div>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{streamingAnswer}</ReactMarkdown>
+                    </div>
+                  </div>
+                )}
+                <div ref={chatEndRef} />
+              </>
+            ) : (
+              <>
+                {!selectedId ? (
+                  <div className="empty-callout">
+                    <p className="empty">{t.selectProject}</p>
+                    <button className="primary" onClick={openCreate} disabled={isBusyGlobal}>
+                      {t.createBtn}
+                    </button>
+                  </div>
+                ) : (
+                  <div>
+                    {streamingOverview !== null || overview ? (
+                      <div>
+                        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
+                          <button
+                            type="button"
+                            className="ghost"
+                            onClick={() => generateOverview("quick")}
+                            disabled={isGeneratingOverview || isBusyPipeline}
+                          >
+                            {isGeneratingOverview ? t.working : t.overviewQuick}
+                          </button>
+                          <button
+                            type="button"
+                            className="ghost"
+                            onClick={() => generateOverview("full")}
+                            disabled={isGeneratingOverview || isBusyPipeline}
+                          >
+                            {isGeneratingOverview ? t.working : t.overviewFull}
+                          </button>
+                        </div>
+
+                        <div className="markdown-body">
+                        {isGeneratingOverview && streamingOverview !== null && (
+                          <div className="msg-meta" style={{ marginTop: 0, marginBottom: 8 }}>
+                            <span>●</span> {lang === "zh" ? "生成中..." : "generating..."}
+                          </div>
+                        )}
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          {streamingOverview ?? overview ?? ""}
+                        </ReactMarkdown>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="empty-callout">
+                        <p className="empty">{lang === "zh" ? "暂无项目概览。" : "No overview yet."}</p>
+                        <div style={{ display: "grid", gap: 12, maxWidth: 520 }}>
+                          <div>
+                            <button
+                              type="button"
+                              className="ghost"
+                              onClick={() => generateOverview("quick")}
+                              disabled={isGeneratingOverview || isBusyPipeline}
+                            >
+                              {isGeneratingOverview ? t.working : t.overviewQuick}
+                            </button>
+                            <p className="hint" style={{ margin: "6px 0 0" }}>{t.overviewQuickDesc}</p>
+                          </div>
+                          <div>
+                            <button
+                              type="button"
+                              className="ghost"
+                              onClick={() => generateOverview("full")}
+                              disabled={isGeneratingOverview || isBusyPipeline}
+                            >
+                              {isGeneratingOverview ? t.working : t.overviewFull}
+                            </button>
+                            <p className="hint" style={{ margin: "6px 0 0" }}>{t.overviewFullDesc}</p>
+                          </div>
+                        </div>
                       </div>
                     )}
-                    <div className="msg-meta">{new Date(entry.created_at).toLocaleString()}</div>
                   </div>
-                </div>
-              ))
+                )}
+              </>
             )}
-            {isStreaming && streamingAnswer !== null && (
-              <div className="chat-turn" key="__streaming__">
-                <div className="msg msg-user">{question.trim()}</div>
-                <div className="msg msg-assistant markdown-body">
-                  <div className="msg-meta" style={{ marginTop: 0, marginBottom: 8 }}>
-                    <span>●</span> {lang === "zh" ? "生成中..." : "typing..."}
-                  </div>
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{streamingAnswer}</ReactMarkdown>
-                </div>
-              </div>
-            )}
-            <div ref={chatEndRef} />
           </div>
 
-          <form className="chat-compose" onSubmit={handleAsk}>
-            <div className="compose-row">
-              <input
-                value={question}
-                onChange={(e) => setQuestion(e.target.value)}
-                placeholder="What positional encoding is used and why?"
-                disabled={!selectedId || isBusyChat}
-              />
-              <button type="submit" className="primary" disabled={!selectedId || isBusyChat}>
-                {busyAction === "ask" ? t.working : t.submit}
-              </button>
-            </div>
-          </form>
+          {activeTab === "chat" && (
+            <>
+              <form className="chat-compose" onSubmit={handleAsk}>
+                <div className="compose-row">
+                  <input
+                    value={question}
+                    onChange={(e) => setQuestion(e.target.value)}
+                    placeholder="What positional encoding is used and why?"
+                    disabled={!selectedId || isBusyChat}
+                  />
+                  <button type="submit" className="primary" disabled={!selectedId || isBusyChat}>
+                    {busyAction === "ask" ? t.working : t.submit}
+                  </button>
+                </div>
+              </form>
 
-          {chatError && <div className="error chat-error">{chatError}</div>}
+              {chatError && <div className="error chat-error">{chatError}</div>}
+            </>
+          )}
+
+          {activeTab === "overview" && overviewError && (
+            <div className="error chat-error">{overviewError}</div>
+          )}
         </main>
       </div>
 
@@ -782,6 +1322,62 @@ export default function App() {
                 )}
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {showCodeViewer && (
+        <div
+          className="modal-backdrop code-viewer-backdrop"
+          role="presentation"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) closeCodeViewer();
+          }}
+        >
+          <div className="code-viewer" role="dialog" aria-modal="true" aria-label="Code viewer">
+            <div className="code-viewer-header">
+              <div>
+                <p className="eyebrow">Code</p>
+                <h2 style={{ margin: 0, fontSize: "1.1rem" }}>
+                  {selectedCodeFile?.path || "Loading..."}
+                </h2>
+                {codeViewerHighlight && (
+                  <p className="hint" style={{ margin: "6px 0 0" }}>
+                    Highlight: L{codeViewerHighlight.startLine} - L{codeViewerHighlight.endLine}
+                  </p>
+                )}
+              </div>
+              <button className="modal-close" onClick={closeCodeViewer} aria-label="Close">
+                X
+              </button>
+            </div>
+
+            <div className="code-viewer-body" ref={codeViewerBodyRef}>
+              {selectedCodeFile ? (
+                <div className="code-file" role="presentation">
+                  {selectedCodeFile.content.split("\n").map((line, idx) => {
+                    const lineNo = idx + 1;
+                    const isHighlighted =
+                      Boolean(codeViewerHighlight) &&
+                      lineNo >= (codeViewerHighlight?.startLine ?? 0) &&
+                      lineNo <= (codeViewerHighlight?.endLine ?? 0);
+
+                    return (
+                      <div
+                        key={`${selectedCodeFile.path}-${lineNo}`}
+                        className={isHighlighted ? "code-line highlight" : "code-line"}
+                        data-line={lineNo}
+                      >
+                        <span className="code-lineno">{lineNo}</span>
+                        <span className="code-content">{line || " "}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="code-file-loading">Loading file...</div>
+              )}
+            </div>
           </div>
         </div>
       )}

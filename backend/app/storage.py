@@ -59,3 +59,79 @@ def read_qa_log(project_id: str) -> List[dict]:
                 continue
             entries.append(json.loads(line))
     return entries
+
+
+def read_project_overview(project_id: str) -> dict | None:
+    overview_path = PROJECTS_DIR / project_id / "summary" / "overview.json"
+    if not overview_path.exists():
+        return None
+    try:
+        return json.loads(overview_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def write_project_overview(project_id: str, content: str, version: str) -> None:
+    project_dir = ensure_project_dirs(project_id)
+    overview_path = project_dir / "summary" / "overview.json"
+    data = {
+        "content": content,
+        "version": version,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    overview_path.write_text(
+        json.dumps(data, ensure_ascii=True, indent=2), encoding="utf-8"
+    )
+
+
+def _read_readme_from_repo(repo_dir: Path) -> str:
+    readme_names = ["README.md", "README.rst", "README.txt", "README"]
+    for name in readme_names:
+        readme_path = repo_dir / name
+        if readme_path.exists():
+            try:
+                return readme_path.read_text(encoding="utf-8")[:5000]
+            except (OSError, UnicodeDecodeError):
+                continue
+    return ""
+
+
+def _read_paper_abstract(parsed_path: Path) -> str:
+    if not parsed_path.exists():
+        return ""
+    try:
+        data = json.loads(parsed_path.read_text(encoding="utf-8"))
+        paragraphs = data.get("paragraphs", [])
+        if paragraphs:
+            first_para = paragraphs[0].get("text", "")
+            return first_para[:2000]
+    except (json.JSONDecodeError, OSError):
+        pass
+    return ""
+
+
+def _get_arxiv_abstract(paper_url: str) -> str:
+    import re
+
+    match = re.search(r"arxiv\.org/abs/(\d+\.\d+)", paper_url)
+    if match:
+        arxiv_id = match.group(1)
+        try:
+            res = requests.get(
+                f"https://export.arxiv.org/api/query?id_list={arxiv_id}", timeout=10
+            )
+            if res.ok:
+                import xml.etree.ElementTree as ET
+
+                root = ET.fromstring(res.text)
+                ns = {"atom": "http://www.w3.org/2005/Atom"}
+                summary = root.find(".//atom:summary", ns)
+                if summary is not None and summary.text:
+                    return summary.text[:2000]
+        except Exception:
+            pass
+    return ""
+
+
+from datetime import datetime, timezone
+import requests

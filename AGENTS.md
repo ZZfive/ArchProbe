@@ -70,6 +70,35 @@ Index/ingest limits (useful for large inputs):
 - `CODE_INDEX_IGNORE_DIRS`, `CODE_INDEX_IGNORE_EXTS`
 - `PAPER_MAX_PDF_BYTES`, `PAPER_MAX_PAGES`, `PAPER_MAX_PARAGRAPHS`
 
+## Key features (recent additions)
+
+### Project Overview Generation
+The system can generate structured project summaries combining paper (arXiv) and code repository information:
+- **Quick Overview**: Generated after project creation using README + arXiv abstract. Fast (~seconds), provides project introduction, core innovations, technical architecture, and key features.
+- **Full Overview**: Generated after completing the 4-step pipeline (ingest → index → align → vectors). Uses full paper content + code symbols for detailed analysis including implementation details and component breakdown.
+- **UI**: Overview is displayed in a separate tab alongside the chat interface, with streaming generation support.
+
+### Code Snippet Display in Q&A
+When asking questions about code implementation:
+- The system retrieves exact code references (file path + line numbers) without LLM rewriting
+- Raw code snippets are fetched directly from the cloned repository and displayed with line numbers
+- Users can view the full file in a modal viewer with the relevant lines highlighted
+- This preserves accurate implementation details that would be lost if passed through LLM text generation
+- Backend endpoints:
+  - `GET /projects/{id}/code/file?path=...` - Full file content
+  - `GET /projects/{id}/code/snippet?path=...&start_line=...&end_line=...` - Specific line range
+
+### Streaming Responses
+Both Q&A and Overview generation use Server-Sent Events (SSE) for real-time streaming:
+- `/projects/{id}/ask-stream` - Stream LLM answers token-by-token
+- `/projects/{id}/overview/generate-quick` and `/overview/generate-full` - Stream overview generation
+- Frontend displays partial content immediately rather than waiting for complete responses
+
+### UI Layout
+Two-column design:
+- **Left Sidebar**: Create project button, collapsible usage guide, collapsible project list (with per-project delete), conditional project detail panel (appears only when project selected), export button
+- **Center**: Tabbed interface switching between Chat and Overview
+
 ## Code style and conventions
 
 ### General

@@ -162,33 +162,44 @@ def _safe_read_text(path: Path) -> Optional[str]:
 
 def _match_symbol(ext: str, line: str) -> Dict[str, str] | None:
     if ext == ".py":
-        match = re.match(r"^\s*(class|def)\s+([A-Za-z_][A-Za-z0-9_]*)", line)
+        match = re.match(
+            r"^\s*(class|(?:async\s+)?def)\s+([A-Za-z_][A-Za-z0-9_]*)", line
+        )
         if match:
-            return {"type": match.group(1), "name": match.group(2)}
+            symbol_type = (
+                "def" if match.group(1) in {"async def", "def"} else match.group(1)
+            )
+            return {"type": symbol_type, "name": match.group(2)}
         return None
     match = re.match(
-        r"^\s*(export\s+)?(class|function)\s+([A-Za-z_][A-Za-z0-9_]*)", line
+        r"^\s*(export\s+)?(?:async\s+)?(class|function)\s+([A-Za-z_][A-Za-z0-9_]*)",
+        line,
     )
     if match:
         return {"type": match.group(2), "name": match.group(3)}
+    match = re.match(
+        r"^\s*export\s+default\s+function\s+([A-Za-z_][A-Za-z0-9_]*)", line
+    )
+    if match:
+        return {"type": "function", "name": match.group(1)}
     return None
 
 
-def write_code_index(dest_path: Path, data: dict) -> None:
+def write_code_index(dest_path: Path, data: Dict[str, object]) -> None:
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     dest_path.write_text(
         json.dumps(data, ensure_ascii=True, indent=2), encoding="utf-8"
     )
 
 
-def write_symbol_index(dest_path: Path, data: dict) -> None:
+def write_symbol_index(dest_path: Path, data: Dict[str, object]) -> None:
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     dest_path.write_text(
         json.dumps(data, ensure_ascii=True, indent=2), encoding="utf-8"
     )
 
 
-def write_text_index(dest_path: Path, data: dict) -> None:
+def write_text_index(dest_path: Path, data: Dict[str, object]) -> None:
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     dest_path.write_text(
         json.dumps(data, ensure_ascii=True, indent=2), encoding="utf-8"
