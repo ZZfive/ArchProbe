@@ -1,0 +1,152 @@
+{
+  "version": 1,
+  "items": [
+    {
+      "id": "paper-01",
+      "category": "paper_only",
+      "question": "Summarize the main contribution of the paper in 3 bullet points.",
+      "expected_route": "paper_only",
+      "expected": "Answer cites paper evidence; minimal/no code citations."
+    },
+    {
+      "id": "paper-02",
+      "category": "paper_only",
+      "question": "What problem setting and assumptions does the paper make?",
+      "expected_route": "paper_only",
+      "expected": "Answer should come primarily from paper paragraphs."
+    },
+    {
+      "id": "paper-03",
+      "category": "paper_only",
+      "question": "Which section introduces the key method, and what are its core steps?",
+      "expected_route": "paper_only",
+      "expected": "Answer references paper structure; if sections not present in evidence, state missing evidence."
+    },
+    {
+      "id": "paper-04",
+      "category": "paper_only",
+      "question": "What are the main experimental results and claimed gains?",
+      "expected_route": "paper_only",
+      "expected": "If results are not in evidence, explicitly say what is missing."
+    },
+    {
+      "id": "paper-05",
+      "category": "paper_only",
+      "question": "What limitations or failure cases does the paper mention?",
+      "expected_route": "paper_only",
+      "expected": "Explicit missing-evidence statement if limitations are absent."
+    },
+    {
+      "id": "code-01",
+      "category": "code_only",
+      "question": "Where is the FastAPI endpoint for ask-stream implemented? Give file path and function name.",
+      "expected_route": "code_only",
+      "expected": "Evidence should be mostly code sources; answer should include a path."
+    },
+    {
+      "id": "code-02",
+      "category": "code_only",
+      "question": "How is SSE parsing implemented on the frontend?",
+      "expected_route": "code_only",
+      "expected": "Answer should cite frontend TypeScript files."
+    },
+    {
+      "id": "code-03",
+      "category": "code_only",
+      "question": "What files define BM25 and vector index querying?",
+      "expected_route": "code_only",
+      "expected": "Answer should cite backend/app/bm25_index.py and backend/app/vector_index.py (or equivalents)."
+    },
+    {
+      "id": "code-04",
+      "category": "code_only",
+      "question": "How are Q&A logs stored on disk? Include the filename.",
+      "expected_route": "code_only",
+      "expected": "Answer cites storage.py and qa/qa_log.jsonl (or equivalent)."
+    },
+    {
+      "id": "code-05",
+      "category": "code_only",
+      "question": "Which function extracts code_refs from evidence?",
+      "expected_route": "code_only",
+      "expected": "Answer references _extract_code_refs_for_question in backend/app/main.py (or equivalent)."
+    },
+    {
+      "id": "hybrid-01",
+      "category": "hybrid",
+      "question": "Explain the paper's core idea and point to where it is implemented in the repo.",
+      "expected_route": "hybrid",
+      "expected": "Mix of paper + code evidence; answer should cite both when available."
+    },
+    {
+      "id": "hybrid-02",
+      "category": "hybrid",
+      "question": "How does the alignment pipeline work and where is it implemented?",
+      "expected_route": "hybrid",
+      "expected": "Should cite alignment.py and paper parsing evidence when available."
+    },
+    {
+      "id": "hybrid-03",
+      "category": "hybrid",
+      "question": "Describe the retrieval strategy for Q&A and how it relates to the indexed artifacts.",
+      "expected_route": "hybrid",
+      "expected": "Should cite code retrieval logic and mention required artifacts (vector/bm25 indices)."
+    },
+    {
+      "id": "hybrid-04",
+      "category": "hybrid",
+      "question": "What does the paper say about the method, and how does the code operationalize it?",
+      "expected_route": "hybrid",
+      "expected": "If either side lacks evidence, say what is missing and avoid overclaiming."
+    },
+    {
+      "id": "hybrid-05",
+      "category": "hybrid",
+      "question": "What are the key components, and where are they defined in the codebase?",
+      "expected_route": "hybrid",
+      "expected": "Should cite code symbols/files; paper evidence optional depending on availability."
+    },
+    {
+      "id": "amb-01",
+      "category": "ambiguous",
+      "question": "What is the architecture of this project?",
+      "expected_route": "hybrid",
+      "expected": "Should mix README/paper context (if available) with code-level evidence; missing-evidence statement if not available."
+    },
+    {
+      "id": "amb-02",
+      "category": "ambiguous",
+      "question": "Why does the model use positional encoding?",
+      "expected_route": "paper_only",
+      "expected": "Should default to paper-only unless implementation details are explicitly requested."
+    },
+    {
+      "id": "amb-03",
+      "category": "ambiguous",
+      "question": "How do I reproduce the main results?",
+      "expected_route": "hybrid",
+      "expected": "Should use code evidence (scripts/config) and paper evidence (setup) where present; otherwise missing-evidence statement."
+    },
+    {
+      "id": "fallback-01",
+      "category": "fallback",
+      "question": "Give a short overview in plain English.",
+      "expected_route": "fallback",
+      "expected": "If no evidence is available, explicitly state insufficient evidence and give minimal safe guidance."
+    },
+    {
+      "id": "fallback-02",
+      "category": "fallback",
+      "question": "What is the training dataset used?",
+      "expected_route": "fallback",
+      "expected": "If dataset is not in evidence, explicitly say missing evidence instead of guessing."
+    },
+    {
+      "id": "fallback-03",
+      "category": "fallback",
+      "question": "What are the exact hyperparameters used?",
+      "expected_route": "fallback",
+      "expected": "Should avoid fabrication and state what evidence is missing."
+    }
+  ]
+}
