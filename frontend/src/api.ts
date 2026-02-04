@@ -21,6 +21,14 @@ export type CodeRef = {
   end_line: number;
 };
 
+export type EvidenceMix = {
+  paper_count: number;
+  code_count: number;
+  total: number;
+  paper_pct: number;
+  code_pct: number;
+};
+
 export type Project = {
   id: string;
   name: string;
@@ -116,14 +124,26 @@ export async function askProjectStream(
   projectId: string,
   question: string,
   onChunk: (chunk: string) => void,
-  onComplete: (result: { answer: string; code_refs?: CodeRef[] }) => void,
+  onComplete: (result: {
+    answer: string;
+    code_refs?: CodeRef[];
+    route?: string;
+    evidence_mix?: EvidenceMix;
+    insufficient_evidence?: boolean;
+  }) => void,
   onError: (error: string) => void
 ): Promise<void>;
 export async function askProjectStream(
   projectId: string,
   question: string,
   onChunk: (chunk: string) => void,
-  onComplete: (result: { answer: string; code_refs?: CodeRef[] }) => void,
+  onComplete: (result: {
+    answer: string;
+    code_refs?: CodeRef[];
+    route?: string;
+    evidence_mix?: EvidenceMix;
+    insufficient_evidence?: boolean;
+  }) => void,
   onError: (error: string) => void,
   signal: AbortSignal
 ): Promise<void>;
@@ -131,7 +151,13 @@ export async function askProjectStream(
   projectId: string,
   question: string,
   onChunk: (chunk: string) => void,
-  onComplete: (result: { answer: string; code_refs?: CodeRef[] }) => void,
+  onComplete: (result: {
+    answer: string;
+    code_refs?: CodeRef[];
+    route?: string;
+    evidence_mix?: EvidenceMix;
+    insufficient_evidence?: boolean;
+  }) => void,
   onError: (error: string) => void,
   signal?: AbortSignal
 ): Promise<void> {
@@ -160,6 +186,9 @@ export async function askProjectStream(
 
     let fullAnswer = "";
     let doneCodeRefs: CodeRef[] = [];
+    let doneRoute: string | undefined;
+    let doneEvidenceMix: EvidenceMix | undefined;
+    let doneInsufficientEvidence: boolean | undefined;
     let reportedParseError = false;
 
     for await (const evt of iterateSseEvents(res)) {
@@ -168,6 +197,9 @@ export async function askProjectStream(
         done?: boolean;
         answer?: string;
         code_refs?: CodeRef[];
+        route?: string;
+        evidence_mix?: EvidenceMix;
+        insufficient_evidence?: boolean;
         error?: string;
       };
       try {
@@ -176,6 +208,9 @@ export async function askProjectStream(
           done?: boolean;
           answer?: string;
           code_refs?: CodeRef[];
+          route?: string;
+          evidence_mix?: EvidenceMix;
+          insufficient_evidence?: boolean;
           error?: string;
         };
       } catch {
@@ -195,8 +230,26 @@ export async function askProjectStream(
         doneCodeRefs = data.code_refs;
       }
 
+      if (typeof data.route === "string") {
+        doneRoute = data.route;
+      }
+
+      if (data.evidence_mix && typeof data.evidence_mix === "object") {
+        doneEvidenceMix = data.evidence_mix;
+      }
+
+      if (typeof data.insufficient_evidence === "boolean") {
+        doneInsufficientEvidence = data.insufficient_evidence;
+      }
+
       if (data.done) {
-        onComplete({ answer: data.answer || fullAnswer, code_refs: doneCodeRefs });
+        onComplete({
+          answer: data.answer || fullAnswer,
+          code_refs: doneCodeRefs,
+          route: doneRoute,
+          evidence_mix: doneEvidenceMix,
+          insufficient_evidence: doneInsufficientEvidence,
+        });
         return;
       }
 
@@ -206,7 +259,13 @@ export async function askProjectStream(
       }
     }
 
-    onComplete({ answer: fullAnswer, code_refs: doneCodeRefs });
+    onComplete({
+      answer: fullAnswer,
+      code_refs: doneCodeRefs,
+      route: doneRoute,
+      evidence_mix: doneEvidenceMix,
+      insufficient_evidence: doneInsufficientEvidence,
+    });
   } finally {
     signal?.removeEventListener("abort", onAbort);
     if (currentAskStreamController === controller) {
@@ -300,6 +359,9 @@ export async function getQaLog(projectId: string): Promise<{
   entries: Array<{
     question: string;
     answer: string;
+    route?: string;
+    evidence_mix?: EvidenceMix;
+    insufficient_evidence?: boolean;
     evidence: Array<{
       paragraph_index?: string;
       page?: string;

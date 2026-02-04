@@ -45,6 +45,15 @@ export default function App() {
       question: string;
       answer: string;
       created_at: string;
+      route?: string;
+      evidence_mix?: {
+        paper_count: number;
+        code_count: number;
+        total: number;
+        paper_pct: number;
+        code_pct: number;
+      };
+      insufficient_evidence?: boolean;
       code_refs?: CodeRef[];
       evidence?: Array<{
         kind?: string;
@@ -570,6 +579,17 @@ export default function App() {
 
     let finalAnswer = "";
     let finalCodeRefs: CodeRef[] = [];
+    let finalRoute: string | undefined;
+    let finalEvidenceMix:
+      | {
+          paper_count: number;
+          code_count: number;
+          total: number;
+          paper_pct: number;
+          code_pct: number;
+        }
+      | undefined;
+    let finalInsufficientEvidence: boolean | undefined;
 
     try {
       await askProjectStream(
@@ -586,6 +606,9 @@ export default function App() {
           if (askRunIdRef.current !== runId) return;
           finalAnswer = result.answer;
           finalCodeRefs = result.code_refs || [];
+          finalRoute = result.route;
+          finalEvidenceMix = result.evidence_mix;
+          finalInsufficientEvidence = result.insufficient_evidence;
         },
         (error) => {
           throw new Error(error);
@@ -601,6 +624,9 @@ export default function App() {
           question: submittedQuestion,
           answer: finalAnswer,
           created_at: new Date().toISOString(),
+          route: finalRoute,
+          evidence_mix: finalEvidenceMix,
+          insufficient_evidence: finalInsufficientEvidence,
           code_refs: finalCodeRefs,
           evidence: [],
         },
@@ -1003,12 +1029,29 @@ export default function App() {
                   qaLog.map((entry, index) => (
                     <div className="chat-turn" key={`${entry.created_at}-${index}`}>
                       <div className="msg msg-user">{entry.question}</div>
-                      <div className="msg msg-assistant markdown-body">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{entry.answer}</ReactMarkdown>
-                        {entry.evidence && entry.evidence.length > 0 && (
-                          <div className="msg-evidence">
-                            {entry.evidence.slice(0, 2).map((ev, evIndex) => (
-                              <div className="evidence-line" key={`${ev.path}-${evIndex}`}>
+                       <div className="msg msg-assistant markdown-body">
+                         <ReactMarkdown remarkPlugins={[remarkGfm]}>{entry.answer}</ReactMarkdown>
+                         {(entry.route || entry.evidence_mix || entry.insufficient_evidence) && (
+                           <p className="hint" style={{ marginTop: 10 }}>
+                             {lang === "zh"
+                               ? `路由: ${entry.route || "-"}`
+                               : `route: ${entry.route || "-"}`}
+                             {entry.evidence_mix
+                               ? lang === "zh"
+                                 ? ` | 证据: 论文 ${entry.evidence_mix.paper_pct}% / 代码 ${entry.evidence_mix.code_pct}%`
+                                 : ` | evidence: paper ${entry.evidence_mix.paper_pct}% / code ${entry.evidence_mix.code_pct}%`
+                               : ""}
+                             {entry.insufficient_evidence
+                               ? lang === "zh"
+                                 ? " | 证据不足"
+                                 : " | insufficient evidence"
+                               : ""}
+                           </p>
+                         )}
+                         {entry.evidence && entry.evidence.length > 0 && (
+                           <div className="msg-evidence">
+                             {entry.evidence.slice(0, 2).map((ev, evIndex) => (
+                               <div className="evidence-line" key={`${ev.path}-${evIndex}`}>
                                 <span className="mono">{ev.path || "unknown"}</span>
                                 {ev.name ? ` :: ${ev.name}` : ""}
                                 {ev.line ? ` (L${ev.line})` : ""}

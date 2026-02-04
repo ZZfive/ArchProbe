@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import Any, List
+from typing import Any, List, cast
 from uuid import uuid4
 
 import requests
@@ -683,103 +683,22 @@ def ask_project(project_id: str, payload: AskRequest) -> AskResponse:
                 confidence=confidence,
                 created_at=datetime.fromisoformat(created_at),
             )
-    alignment_path = row["alignment_path"]
-    evidence = []
-    if alignment_path:
-        alignment_file = Path(alignment_path)
-        if alignment_file.exists():
-            alignment = json.loads(alignment_file.read_text(encoding="utf-8"))
-            evidence = _collect_evidence(alignment)
-
-    paper_vector_path = Path(
-        ensure_project_dirs(project_id) / "paper" / "vector_index.json"
-    )
-    code_vector_path = Path(
-        ensure_project_dirs(project_id) / "code" / "vector_index.json"
-    )
     project_dir = ensure_project_dirs(project_id)
-    parsed_path = project_dir / "paper" / "parsed.json"
-    text_index_path = project_dir / "code" / "text_index.json"
-    paper_paragraphs: list[dict[str, object]] = []
-    code_excerpts: dict[str, str] = {}
-    if parsed_path.exists():
-        try:
-            paper_data = json.loads(parsed_path.read_text(encoding="utf-8"))
-            raw_paragraphs = paper_data.get("paragraphs", [])
-            if isinstance(raw_paragraphs, list):
-                paper_paragraphs = raw_paragraphs
-        except json.JSONDecodeError:
-            paper_paragraphs = []
-    if text_index_path.exists():
-        try:
-            code_data = json.loads(text_index_path.read_text(encoding="utf-8"))
-            for entry in code_data.get("entries", []):
-                path = entry.get("path")
-                excerpt = entry.get("excerpt")
-                if path and excerpt and path not in code_excerpts:
-                    code_excerpts[str(path)] = str(excerpt)
-        except json.JSONDecodeError:
-            code_excerpts = {}
-    query_text = payload.question
-    if focus_points:
-        query_text = query_text + "\n\nFocus points: " + ", ".join(focus_points)
-    paper_vec_matches: list[tuple[str, float]] = []
-    code_vec_matches: list[tuple[str, float]] = []
-    if paper_vector_path.exists():
-        paper_index = load_vector_index(paper_vector_path)
-        paper_vec_matches = query_vector_index(paper_index, query_text, top_k=5)
-    if code_vector_path.exists():
-        code_index = load_vector_index(code_vector_path)
-        code_vec_matches = query_vector_index(code_index, query_text, top_k=5)
-
-    paper_bm25_path = project_dir / "paper" / "bm25_index.json"
-    code_bm25_path = project_dir / "code" / "bm25_index.json"
-    paper_bm25_matches: list[tuple[str, float]] = []
-    code_bm25_matches: list[tuple[str, float]] = []
-    if paper_bm25_path.exists():
-        paper_bm25 = load_bm25_index(paper_bm25_path)
-        paper_bm25_matches = query_bm25_index(paper_bm25, query_text, top_k=5)
-    if code_bm25_path.exists():
-        code_bm25 = load_bm25_index(code_bm25_path)
-        code_bm25_matches = query_bm25_index(code_bm25, query_text, top_k=5)
-
-    for doc_id, score in _rrf_fuse(
-        [("tfidf", paper_vec_matches), ("bm25", paper_bm25_matches)], top_k=3
-    ):
-        ev: dict[str, object] = {}
-        ev["kind"] = "paper_hybrid"
-        ev["doc_id"] = doc_id
-        ev["score"] = score
-        if isinstance(doc_id, str) and doc_id.startswith("paper:"):
-            raw_idx = doc_id.split(":", 1)[1]
-            if raw_idx.isdigit():
-                idx = int(raw_idx)
-                if 0 <= idx < len(paper_paragraphs):
-                    paragraph = paper_paragraphs[idx]
-                    ev["paragraph_index"] = str(idx)
-                    ev["page"] = str(paragraph.get("page", ""))
-                    ev["text_excerpt"] = str(paragraph.get("text", ""))[:240]
-        evidence.append(ev)
-
-    for doc_id, score in _rrf_fuse(
-        [("tfidf", code_vec_matches), ("bm25", code_bm25_matches)], top_k=3
-    ):
-        ev: dict[str, object] = {}
-        ev["kind"] = "code_hybrid"
-        ev["doc_id"] = doc_id
-        ev["score"] = score
-        if isinstance(doc_id, str) and doc_id.startswith("code:"):
-            rel = doc_id.split(":", 1)[1]
-            if rel:
-                ev["path"] = rel
-                ev["excerpt"] = code_excerpts.get(rel, "")[:240]
-        evidence.append(ev)
-
-    evidence = _dedup_evidence(evidence)
+    route, evidence, evidence_mix, insufficient_evidence = _build_routed_evidence(
+        project_dir=project_dir,
+        question=payload.question,
+        focus_points=focus_points,
+        alignment_path=str(row["alignment_path"] or ""),
+    )
+    llm_question = _with_llm_context(
+        payload.question, route, evidence_mix, insufficient_evidence
+    )
 
     try:
         response = generate_answer(
-            payload.question, evidence, focus_points=focus_points or None
+            llm_question,
+            evidence,
+            focus_points=focus_points or None,
         )
         answer = str(response.get("answer", ""))
         raw_confidence = response.get("confidence", 0.0)
@@ -801,6 +720,9 @@ def ask_project(project_id: str, payload: AskRequest) -> AskResponse:
         "question": payload.question,
         "answer": answer,
         "evidence": evidence,
+        "route": route,
+        "evidence_mix": evidence_mix,
+        "insufficient_evidence": insufficient_evidence,
         "confidence": confidence,
         "created_at": now,
     }
@@ -841,105 +763,24 @@ def ask_project_stream(project_id: str, payload: AskRequest) -> StreamingRespons
         except json.JSONDecodeError:
             focus_points = []
 
-    alignment_path = row["alignment_path"]
-    evidence = []
-    if alignment_path:
-        alignment_file = Path(alignment_path)
-        if alignment_file.exists():
-            alignment = json.loads(alignment_file.read_text(encoding="utf-8"))
-            evidence = _collect_evidence(alignment)
-
-    paper_vector_path = Path(
-        ensure_project_dirs(project_id) / "paper" / "vector_index.json"
-    )
-    code_vector_path = Path(
-        ensure_project_dirs(project_id) / "code" / "vector_index.json"
-    )
     project_dir = ensure_project_dirs(project_id)
-    parsed_path = project_dir / "paper" / "parsed.json"
-    text_index_path = project_dir / "code" / "text_index.json"
-    paper_paragraphs: list[dict[str, object]] = []
-    code_excerpts: dict[str, str] = {}
-    if parsed_path.exists():
-        try:
-            paper_data = json.loads(parsed_path.read_text(encoding="utf-8"))
-            raw_paragraphs = paper_data.get("paragraphs", [])
-            if isinstance(raw_paragraphs, list):
-                paper_paragraphs = raw_paragraphs
-        except json.JSONDecodeError:
-            paper_paragraphs = []
-    if text_index_path.exists():
-        try:
-            code_data = json.loads(text_index_path.read_text(encoding="utf-8"))
-            for entry in code_data.get("entries", []):
-                path = entry.get("path")
-                excerpt = entry.get("excerpt")
-                if path and excerpt and path not in code_excerpts:
-                    code_excerpts[str(path)] = str(excerpt)
-        except json.JSONDecodeError:
-            code_excerpts = {}
-    query_text = payload.question
-    if focus_points:
-        query_text = query_text + "\n\nFocus points: " + ", ".join(focus_points)
-    paper_vec_matches: list[tuple[str, float]] = []
-    code_vec_matches: list[tuple[str, float]] = []
-    if paper_vector_path.exists():
-        paper_index = load_vector_index(paper_vector_path)
-        paper_vec_matches = query_vector_index(paper_index, query_text, top_k=5)
-    if code_vector_path.exists():
-        code_index = load_vector_index(code_vector_path)
-        code_vec_matches = query_vector_index(code_index, query_text, top_k=5)
-
-    paper_bm25_path = project_dir / "paper" / "bm25_index.json"
-    code_bm25_path = project_dir / "code" / "bm25_index.json"
-    paper_bm25_matches: list[tuple[str, float]] = []
-    code_bm25_matches: list[tuple[str, float]] = []
-    if paper_bm25_path.exists():
-        paper_bm25 = load_bm25_index(paper_bm25_path)
-        paper_bm25_matches = query_bm25_index(paper_bm25, query_text, top_k=5)
-    if code_bm25_path.exists():
-        code_bm25 = load_bm25_index(code_bm25_path)
-        code_bm25_matches = query_bm25_index(code_bm25, query_text, top_k=5)
-
-    for doc_id, score in _rrf_fuse(
-        [("tfidf", paper_vec_matches), ("bm25", paper_bm25_matches)], top_k=3
-    ):
-        ev: dict[str, object] = {}
-        ev["kind"] = "paper_hybrid"
-        ev["doc_id"] = doc_id
-        ev["score"] = score
-        if isinstance(doc_id, str) and doc_id.startswith("paper:"):
-            raw_idx = doc_id.split(":", 1)[1]
-            if raw_idx.isdigit():
-                idx = int(raw_idx)
-                if 0 <= idx < len(paper_paragraphs):
-                    paragraph = paper_paragraphs[idx]
-                    ev["paragraph_index"] = str(idx)
-                    ev["page"] = str(paragraph.get("page", ""))
-                    ev["text_excerpt"] = str(paragraph.get("text", ""))[:240]
-        evidence.append(ev)
-
-    for doc_id, score in _rrf_fuse(
-        [("tfidf", code_vec_matches), ("bm25", code_bm25_matches)], top_k=3
-    ):
-        ev: dict[str, object] = {}
-        ev["kind"] = "code_hybrid"
-        ev["doc_id"] = doc_id
-        ev["score"] = score
-        if isinstance(doc_id, str) and doc_id.startswith("code:"):
-            rel = doc_id.split(":", 1)[1]
-            if rel:
-                ev["path"] = rel
-                ev["excerpt"] = code_excerpts.get(rel, "")[:240]
-        evidence.append(ev)
-
-    evidence = _dedup_evidence(evidence)
+    route, evidence, evidence_mix, insufficient_evidence = _build_routed_evidence(
+        project_dir=project_dir,
+        question=payload.question,
+        focus_points=focus_points,
+        alignment_path=str(row["alignment_path"] or ""),
+    )
+    llm_question = _with_llm_context(
+        payload.question, route, evidence_mix, insufficient_evidence
+    )
 
     def stream_generator():
         answer_parts = []
         try:
             for chunk in generate_answer_stream(
-                payload.question, evidence, focus_points=focus_points or None
+                llm_question,
+                evidence,
+                focus_points=focus_points or None,
             ):
                 answer_parts.append(chunk)
                 yield f"data: {json.dumps({'chunk': chunk}, ensure_ascii=False)}\n\n"
@@ -953,6 +794,9 @@ def ask_project_stream(project_id: str, payload: AskRequest) -> StreamingRespons
                 "question": payload.question,
                 "answer": answer,
                 "evidence": evidence,
+                "route": route,
+                "evidence_mix": evidence_mix,
+                "insufficient_evidence": insufficient_evidence,
                 "code_refs": code_refs,
                 "confidence": 0.6,
                 "created_at": now,
@@ -961,9 +805,311 @@ def ask_project_stream(project_id: str, payload: AskRequest) -> StreamingRespons
             append_project_summary(
                 project_id, [f"Q: {payload.question}", f"A: {answer}", "---"]
             )
-            yield f"data: {json.dumps({'done': True, 'answer': answer, 'code_refs': code_refs}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'done': True, 'answer': answer, 'code_refs': code_refs, 'route': route, 'evidence_mix': evidence_mix, 'insufficient_evidence': insufficient_evidence}, ensure_ascii=False)}\n\n"
         except LLMError as err:
             yield f"data: {json.dumps({'error': str(err)}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        stream_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+def _route_question(question: str) -> str:
+    q = question.strip().lower()
+    if not q:
+        return "fallback"
+
+    code_markers = [
+        "code",
+        "repo",
+        "repository",
+        "file",
+        "files",
+        "filepath",
+        "path",
+        "function",
+        "class",
+        "module",
+        "import",
+        "endpoint",
+        "api",
+        "fastapi",
+        "frontend",
+        "backend",
+        "typescript",
+        "react",
+        "implementation",
+        "where is",
+        "which file",
+    ]
+    paper_markers = [
+        "paper",
+        "section",
+        "figure",
+        "table",
+        "equation",
+        "theorem",
+        "lemma",
+        "proof",
+        "appendix",
+        "abstract",
+        "introduction",
+        "method",
+        "experiment",
+        "results",
+        "dataset",
+        "hyperparameter",
+        "ablation",
+        "arxiv",
+    ]
+
+    code_score = 0
+    paper_score = 0
+    for m in code_markers:
+        if m in q:
+            code_score += 1
+    for m in paper_markers:
+        if m in q:
+            paper_score += 1
+
+    # Code-ish syntax indicators.
+    if "/" in question or "::" in question or "(" in question or "`" in question:
+        code_score += 1
+    if re.search(r"\.(py|ts|tsx|js|jsx|md|json|yaml|yml|toml)\b", q):
+        code_score += 2
+
+    if paper_score >= 2 and code_score == 0:
+        return "paper_only"
+    if code_score >= 2 and paper_score == 0:
+        return "code_only"
+    if paper_score > 0 and code_score > 0:
+        return "hybrid"
+    return "fallback"
+
+
+def _tokenize_query(text: str) -> list[str]:
+    raw = re.findall(r"[A-Za-z][A-Za-z0-9_]+", text)
+    tokens = [tok.lower() for tok in raw if len(tok) >= 3]
+    # Preserve some file-ish suffix tokens (ts/py) via regex above.
+    return tokens
+
+
+def _with_llm_context(
+    question: str,
+    route: str,
+    evidence_mix: dict[str, object],
+    insufficient_evidence: bool,
+) -> str:
+    mix_str = ""
+    paper_pct = evidence_mix.get("paper_pct")
+    code_pct = evidence_mix.get("code_pct")
+    if paper_pct is not None and code_pct is not None:
+        mix_str = f"paper={paper_pct}% code={code_pct}%"
+    return (
+        question
+        + "\n\nContext:\n"
+        + f"- route={route}\n"
+        + (f"- evidence_mix={mix_str}\n" if mix_str else "")
+        + f"- insufficient_evidence={str(bool(insufficient_evidence)).lower()}"
+    )
+
+
+def _evidence_text(item: dict[str, object]) -> str:
+    parts: list[str] = []
+    for key in ("path", "name", "doc_id", "excerpt", "text_excerpt"):
+        val = item.get(key)
+        if val:
+            parts.append(str(val))
+    return "\n".join(parts)
+
+
+def _filter_evidence_by_relevance(
+    evidence: list[dict[str, object]], query_text: str
+) -> list[dict[str, object]]:
+    tokens = set(_tokenize_query(query_text))
+    if not tokens:
+        return evidence
+
+    def _keep(item: dict[str, object]) -> bool:
+        text = _evidence_text(item).lower()
+        if not text:
+            return False
+        overlap = 0
+        for tok in tokens:
+            if tok in text:
+                overlap += 1
+        if len(tokens) <= 3:
+            return overlap >= 1
+        ratio = overlap / max(len(tokens), 1)
+        return overlap >= 2 or ratio >= 0.12
+
+    kept = [ev for ev in evidence if _keep(ev)]
+    # Avoid returning empty evidence solely due to filtering.
+    return kept if kept else evidence[:3]
+
+
+def _compute_evidence_mix(evidence: list[dict[str, object]]) -> dict[str, object]:
+    paper = 0
+    code = 0
+    for item in evidence:
+        kind = str(item.get("kind", ""))
+        if kind.startswith("paper"):
+            paper += 1
+        elif kind.startswith("code") or kind in {"symbol", "file"}:
+            code += 1
+        else:
+            # Default unknown evidence kinds to code-ish.
+            code += 1
+    total = paper + code
+    paper_pct = int(round((paper / total) * 100)) if total else 0
+    code_pct = 100 - paper_pct if total else 0
+    return {
+        "paper_count": paper,
+        "code_count": code,
+        "total": total,
+        "paper_pct": paper_pct,
+        "code_pct": code_pct,
+    }
+
+
+def _load_paper_paragraphs(project_dir: Path) -> list[dict[str, object]]:
+    parsed_path = project_dir / "paper" / "parsed.json"
+    if not parsed_path.exists():
+        return []
+    try:
+        paper_data = json.loads(parsed_path.read_text(encoding="utf-8"))
+        raw_paragraphs = paper_data.get("paragraphs", [])
+        if isinstance(raw_paragraphs, list):
+            return raw_paragraphs
+    except (OSError, json.JSONDecodeError):
+        return []
+    return []
+
+
+def _load_code_excerpts(project_dir: Path) -> dict[str, str]:
+    text_index_path = project_dir / "code" / "text_index.json"
+    if not text_index_path.exists():
+        return {}
+    out: dict[str, str] = {}
+    try:
+        code_data = json.loads(text_index_path.read_text(encoding="utf-8"))
+        for entry in code_data.get("entries", []):
+            path = entry.get("path")
+            excerpt = entry.get("excerpt")
+            if path and excerpt and path not in out:
+                out[str(path)] = str(excerpt)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return out
+
+
+def _build_routed_evidence(
+    project_dir: Path,
+    question: str,
+    focus_points: list[str],
+    alignment_path: str,
+) -> tuple[str, list[dict[str, object]], dict[str, object], bool]:
+    route = _route_question(question)
+
+    query_text = question
+    if focus_points:
+        query_text = query_text + "\n\nFocus points: " + ", ".join(focus_points)
+
+    paper_paragraphs = _load_paper_paragraphs(project_dir)
+    code_excerpts = _load_code_excerpts(project_dir)
+
+    want_paper = route in {"paper_only", "hybrid", "fallback"}
+    want_code = route in {"code_only", "hybrid", "fallback"}
+
+    # Alignment evidence is treated as auxiliary signal (only for hybrid).
+    alignment_evidence: list[dict[str, object]] = []
+    if route == "hybrid" and alignment_path:
+        alignment_file = Path(alignment_path)
+        if alignment_file.exists():
+            try:
+                alignment = json.loads(alignment_file.read_text(encoding="utf-8"))
+                alignment_evidence = _collect_evidence(alignment)
+            except (OSError, json.JSONDecodeError):
+                alignment_evidence = []
+
+    evidence: list[dict[str, object]] = []
+
+    if want_paper:
+        paper_vector_path = project_dir / "paper" / "vector_index.json"
+        paper_vec_matches: list[tuple[str, float]] = []
+        if paper_vector_path.exists():
+            paper_index = load_vector_index(paper_vector_path)
+            paper_vec_matches = query_vector_index(paper_index, query_text, top_k=5)
+
+        paper_bm25_path = project_dir / "paper" / "bm25_index.json"
+        paper_bm25_matches: list[tuple[str, float]] = []
+        if paper_bm25_path.exists():
+            paper_bm25 = load_bm25_index(paper_bm25_path)
+            paper_bm25_matches = query_bm25_index(paper_bm25, query_text, top_k=5)
+
+        for doc_id, score in _rrf_fuse(
+            [("tfidf", paper_vec_matches), ("bm25", paper_bm25_matches)],
+            top_k=3,
+        ):
+            ev: dict[str, object] = {}
+            ev["kind"] = "paper_hybrid"
+            ev["doc_id"] = doc_id
+            ev["score"] = score
+            if isinstance(doc_id, str) and doc_id.startswith("paper:"):
+                raw_idx = doc_id.split(":", 1)[1]
+                if raw_idx.isdigit():
+                    idx = int(raw_idx)
+                    if 0 <= idx < len(paper_paragraphs):
+                        paragraph = paper_paragraphs[idx]
+                        ev["paragraph_index"] = str(idx)
+                        ev["page"] = str(paragraph.get("page", ""))
+                        ev["text_excerpt"] = str(paragraph.get("text", ""))[:240]
+            evidence.append(ev)
+
+    if want_code:
+        code_vector_path = project_dir / "code" / "vector_index.json"
+        code_vec_matches: list[tuple[str, float]] = []
+        if code_vector_path.exists():
+            code_index = load_vector_index(code_vector_path)
+            code_vec_matches = query_vector_index(code_index, query_text, top_k=5)
+
+        code_bm25_path = project_dir / "code" / "bm25_index.json"
+        code_bm25_matches: list[tuple[str, float]] = []
+        if code_bm25_path.exists():
+            code_bm25 = load_bm25_index(code_bm25_path)
+            code_bm25_matches = query_bm25_index(code_bm25, query_text, top_k=5)
+
+        for doc_id, score in _rrf_fuse(
+            [("tfidf", code_vec_matches), ("bm25", code_bm25_matches)],
+            top_k=3,
+        ):
+            ev = {
+                "kind": "code_hybrid",
+                "doc_id": doc_id,
+                "score": score,
+            }
+            if isinstance(doc_id, str) and doc_id.startswith("code:"):
+                rel = doc_id.split(":", 1)[1]
+                if rel:
+                    ev["path"] = rel
+                    ev["excerpt"] = code_excerpts.get(rel, "")[:240]
+            evidence.append(ev)
+
+    # Cap alignment contribution (aux signal): at most 2 items.
+    if alignment_evidence:
+        evidence.extend(alignment_evidence[:2])
+
+    evidence = _dedup_evidence(evidence)
+    evidence = _filter_evidence_by_relevance(evidence, query_text)
+    evidence_mix = _compute_evidence_mix(evidence)
+    insufficient = bool(not evidence)
+    return route, evidence, evidence_mix, insufficient
 
     return StreamingResponse(
         stream_generator(),

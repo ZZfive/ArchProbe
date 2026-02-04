@@ -1,5 +1,5 @@
 import json
-from typing import Dict, Generator, List, Optional
+from typing import Dict, Generator, List, Mapping, Optional
 
 import requests
 
@@ -14,6 +14,7 @@ def generate_answer(
     question: str,
     evidence: List[Dict[str, object]],
     focus_points: List[str] | None = None,
+    meta: Optional[Mapping[str, object]] = None,
 ) -> Dict[str, object]:
     if LLM_PROVIDER == "local":
         return {
@@ -25,7 +26,7 @@ def generate_answer(
             "answer": "LLM API key not configured. Evidence collected below.",
             "confidence": 0.0,
         }
-    prompt = _build_prompt(question, evidence, focus_points=focus_points)
+    prompt = _build_prompt(question, evidence, focus_points=focus_points, meta=meta)
     response = _call_openai_compatible(prompt)
     return response
 
@@ -34,6 +35,7 @@ def generate_answer_stream(
     question: str,
     evidence: List[Dict[str, object]],
     focus_points: List[str] | None = None,
+    meta: Optional[Mapping[str, object]] = None,
 ) -> Generator[str, None, None]:
     if LLM_PROVIDER == "local":
         yield "Local model not configured yet. Evidence collected below."
@@ -42,7 +44,7 @@ def generate_answer_stream(
         yield "LLM API key not configured. Evidence collected below."
         return
 
-    prompt = _build_prompt(question, evidence, focus_points=focus_points)
+    prompt = _build_prompt(question, evidence, focus_points=focus_points, meta=meta)
     yield from _call_openai_compatible_stream(prompt)
 
 
@@ -164,7 +166,10 @@ def _build_system_prompt() -> str:
 
 
 def _build_prompt(
-    question: str, evidence: List[Dict[str, object]], focus_points: List[str] | None
+    question: str,
+    evidence: List[Dict[str, object]],
+    focus_points: List[str] | None,
+    meta: Optional[Mapping[str, object]] = None,
 ) -> str:
     focus_block = ""
     if focus_points:
@@ -177,14 +182,37 @@ def _build_prompt(
     for idx, item in enumerate(evidence[:10], start=1):
         evidence_lines.append(_format_evidence(idx, item))
     evidence_block = "\n".join(evidence_lines)
+
+    meta_block = ""
+    if meta:
+        route = str(meta.get("route") or "").strip()
+        mix = meta.get("evidence_mix")
+        insufficient = meta.get("insufficient_evidence")
+        mix_str = ""
+        if isinstance(mix, dict):
+            paper_pct = mix.get("paper_pct")
+            code_pct = mix.get("code_pct")
+            if paper_pct is not None and code_pct is not None:
+                mix_str = f"paper={paper_pct}% code={code_pct}%"
+        parts = []
+        if route:
+            parts.append(f"route={route}")
+        if mix_str:
+            parts.append(mix_str)
+        if isinstance(insufficient, bool):
+            parts.append(f"insufficient_evidence={str(insufficient).lower()}")
+        if parts:
+            meta_block = "\nContext:\n- " + "\n- ".join(parts)
     return (
         f"Question: {question}"
+        f"{meta_block}"
         f"{focus_block}"
         "\n\nEvidence (cite like [E1], [E2]):\n"
         f"{evidence_block}"
         "\n\nInstructions:\n"
         "- Answer using only the evidence above.\n"
-        "- If evidence is insufficient, say what is missing.\n"
+        "- If evidence is insufficient, explicitly say what is missing.\n"
+        "- If you add any inference beyond evidence, label it as 'Hypothesis' and keep it minimal.\n"
         "- Include citations like [E1] after relevant sentences."
     )
 
