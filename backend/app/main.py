@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import Any, List, cast
+from typing import Any, List
 from uuid import uuid4
 
 import requests
@@ -93,8 +93,16 @@ app.add_middleware(
         "http://[::1]:5173",
     ],
     # Vite may auto-increment the port (e.g. 5174) if 5173 is taken.
-    # Allow any loopback origin on any port for local dev.
-    allow_origin_regex=r"^http://(localhost|127\.0\.0\.1|\[::1\]):\d+$",
+    # Also allow common LAN dev origins (RFC1918) for cases where the UI is opened
+    # via a machine IP (e.g. http://192.168.x.x:5173).
+    allow_origin_regex=(
+        r"^https?://("
+        r"localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0|"
+        r"10\.\d{1,3}\.\d{1,3}\.\d{1,3}|"
+        r"192\.168\.\d{1,3}\.\d{1,3}|"
+        r"172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}"
+        r")(?:\:\d+)?$"
+    ),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -826,6 +834,16 @@ def _route_question(question: str) -> str:
         return "fallback"
 
     code_markers = [
+        "代码",
+        "源码",
+        "实现",
+        "函数",
+        "类",
+        "接口",
+        "路径",
+        "文件",
+        "前端",
+        "后端",
         "code",
         "repo",
         "repository",
@@ -849,6 +867,20 @@ def _route_question(question: str) -> str:
         "which file",
     ]
     paper_markers = [
+        "论文",
+        "摘要",
+        "引言",
+        "方法",
+        "实验",
+        "结果",
+        "结论",
+        "贡献",
+        "局限",
+        "限制",
+        "数据集",
+        "训练",
+        "超参数",
+        "消融",
         "paper",
         "section",
         "figure",
@@ -884,9 +916,9 @@ def _route_question(question: str) -> str:
     if re.search(r"\.(py|ts|tsx|js|jsx|md|json|yaml|yml|toml)\b", q):
         code_score += 2
 
-    if paper_score >= 2 and code_score == 0:
+    if paper_score >= 1 and code_score == 0:
         return "paper_only"
-    if code_score >= 2 and paper_score == 0:
+    if code_score >= 1 and paper_score == 0:
         return "code_only"
     if paper_score > 0 and code_score > 0:
         return "hybrid"
@@ -896,7 +928,12 @@ def _route_question(question: str) -> str:
 def _tokenize_query(text: str) -> list[str]:
     raw = re.findall(r"[A-Za-z][A-Za-z0-9_]+", text)
     tokens = [tok.lower() for tok in raw if len(tok) >= 3]
-    # Preserve some file-ish suffix tokens (ts/py) via regex above.
+    for run in re.findall(r"[\u4e00-\u9fff]+", text):
+        if len(run) == 1:
+            tokens.append(run)
+        else:
+            for idx in range(len(run) - 1):
+                tokens.append(run[idx : idx + 2])
     return tokens
 
 
@@ -1040,6 +1077,7 @@ def _build_routed_evidence(
 
     evidence: list[dict[str, object]] = []
 
+    paper_evidence: list[dict[str, object]] = []
     if want_paper:
         paper_vector_path = project_dir / "paper" / "vector_index.json"
         paper_vec_matches: list[tuple[str, float]] = []
@@ -1070,8 +1108,21 @@ def _build_routed_evidence(
                         ev["paragraph_index"] = str(idx)
                         ev["page"] = str(paragraph.get("page", ""))
                         ev["text_excerpt"] = str(paragraph.get("text", ""))[:240]
-            evidence.append(ev)
+            paper_evidence.append(ev)
 
+    if not paper_evidence and paper_paragraphs:
+        for idx, paragraph in enumerate(paper_paragraphs[:3]):
+            ev = {
+                "kind": "paper_fallback",
+                "doc_id": f"paper:{idx}",
+                "score": 0.0,
+                "paragraph_index": str(idx),
+                "page": str(paragraph.get("page", "")),
+                "text_excerpt": str(paragraph.get("text", ""))[:240],
+            }
+            paper_evidence.append(ev)
+
+    code_evidence: list[dict[str, object]] = []
     if want_code:
         code_vector_path = project_dir / "code" / "vector_index.json"
         code_vec_matches: list[tuple[str, float]] = []
@@ -1099,7 +1150,22 @@ def _build_routed_evidence(
                 if rel:
                     ev["path"] = rel
                     ev["excerpt"] = code_excerpts.get(rel, "")[:240]
-            evidence.append(ev)
+            code_evidence.append(ev)
+
+    if route in {"code_only", "hybrid"} and not code_evidence and code_excerpts:
+        for rel, excerpt in sorted(code_excerpts.items())[:3]:
+            code_evidence.append(
+                {
+                    "kind": "code_fallback",
+                    "doc_id": f"code:{rel}",
+                    "score": 0.0,
+                    "path": rel,
+                    "excerpt": str(excerpt)[:240],
+                }
+            )
+
+    evidence.extend(paper_evidence)
+    evidence.extend(code_evidence)
 
     # Cap alignment contribution (aux signal): at most 2 items.
     if alignment_evidence:

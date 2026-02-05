@@ -1,4 +1,34 @@
-const API_BASE = "http://localhost:8000";
+function normalizeApiBase(value: string): string {
+  const trimmed = value.trim();
+  return trimmed.endsWith("/") ? trimmed.slice(0, -1) : trimmed;
+}
+
+const API_BASE = (() => {
+  const raw = (import.meta as { env?: Record<string, unknown> }).env?.VITE_API_BASE;
+  if (typeof raw === "string" && raw.trim()) {
+    return normalizeApiBase(raw);
+  }
+  // Default to same-origin relative paths.
+  // This works with Vite dev server proxy when using VSCode port forwarding.
+  return "";
+})();
+
+function buildUrl(path: string): string {
+  if (!path.startsWith("/")) return path;
+  return API_BASE ? `${API_BASE}${path}` : path;
+}
+
+async function fetchWithFallback(path: string, init?: RequestInit): Promise<Response> {
+  const primary = buildUrl(path);
+  try {
+    return await fetch(primary, init);
+  } catch (err) {
+    // If API_BASE is configured but not reachable from the browser (common with VSCode port forwarding),
+    // retry same-origin relative path so Vite proxy can forward to backend.
+    if (!API_BASE) throw err;
+    return await fetch(path, init);
+  }
+}
 
 let currentAskStreamController: AbortController | null = null;
 let currentOverviewStreamController: AbortController | null = null;
@@ -49,7 +79,7 @@ export type Project = {
 };
 
 export async function listProjects(): Promise<Project[]> {
-  const res = await fetch(`${API_BASE}/projects`);
+  const res = await fetchWithFallback(`/projects`);
   if (!res.ok) {
     throw new Error("Failed to load projects");
   }
@@ -62,19 +92,26 @@ export async function createProject(payload: {
   repo_url: string;
   focus_points?: string[];
 }): Promise<Project> {
-  const res = await fetch(`${API_BASE}/projects`, {
+  const res = await fetchWithFallback(`/projects`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
   if (!res.ok) {
-    throw new Error("Failed to create project");
+    let message = "Failed to create project";
+    try {
+      const errorData = (await res.json()) as { detail?: string };
+      if (errorData.detail) {
+        message = errorData.detail;
+      }
+    } catch {}
+    throw new Error(message);
   }
   return res.json();
 }
 
 export async function getProject(projectId: string): Promise<Project> {
-  const res = await fetch(`${API_BASE}/projects/${projectId}`);
+  const res = await fetchWithFallback(`/projects/${projectId}`);
   if (!res.ok) {
     throw new Error("Failed to load project");
   }
@@ -86,7 +123,7 @@ export async function ingestProject(projectId: string): Promise<{
   paper_hash: string;
   parsed_path: string;
 }> {
-  const res = await fetch(`${API_BASE}/projects/${projectId}/ingest`, {
+  const res = await fetchWithFallback(`/projects/${projectId}/ingest`, {
     method: "POST",
   });
   if (!res.ok) {
@@ -109,7 +146,7 @@ export async function askProject(projectId: string, question: string): Promise<{
   confidence: number;
   created_at: string;
 }> {
-  const res = await fetch(`${API_BASE}/projects/${projectId}/ask`, {
+  const res = await fetchWithFallback(`/projects/${projectId}/ask`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ question }),
@@ -173,7 +210,7 @@ export async function askProjectStream(
   }
 
   try {
-    const res = await fetch(`${API_BASE}/projects/${projectId}/ask-stream`, {
+    const res = await fetchWithFallback(`/projects/${projectId}/ask-stream`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ question }),
@@ -381,7 +418,7 @@ export async function getQaLog(projectId: string): Promise<{
     created_at: string;
   }>;
 }> {
-  const res = await fetch(`${API_BASE}/projects/${projectId}/qa`);
+  const res = await fetchWithFallback(`/projects/${projectId}/qa`);
   if (!res.ok) {
     throw new Error("Failed to load QA log");
   }
@@ -393,7 +430,7 @@ export async function indexCode(projectId: string): Promise<{
   repo_hash: string;
   index_path: string;
 }> {
-  const res = await fetch(`${API_BASE}/projects/${projectId}/code-index`, {
+  const res = await fetchWithFallback(`/projects/${projectId}/code-index`, {
     method: "POST",
   });
   if (!res.ok) {
@@ -407,7 +444,7 @@ export async function alignProject(projectId: string): Promise<{
   alignment_path: string;
   match_count: number;
 }> {
-  const res = await fetch(`${API_BASE}/projects/${projectId}/align`, {
+  const res = await fetchWithFallback(`/projects/${projectId}/align`, {
     method: "POST",
   });
   if (!res.ok) {
@@ -423,7 +460,7 @@ export async function buildVectors(projectId: string): Promise<{
   paper_bm25_path: string;
   code_bm25_path: string;
 }> {
-  const res = await fetch(`${API_BASE}/projects/${projectId}/vector-index`, {
+  const res = await fetchWithFallback(`/projects/${projectId}/vector-index`, {
     method: "POST",
   });
   if (!res.ok) {
@@ -433,7 +470,7 @@ export async function buildVectors(projectId: string): Promise<{
 }
 
 export async function deleteProject(projectId: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/projects/${projectId}`, {
+  const res = await fetchWithFallback(`/projects/${projectId}`, {
     method: "DELETE",
   });
   if (!res.ok) {
@@ -447,7 +484,7 @@ export async function getOverview(projectId: string): Promise<{
   version: string;
   generated_at: string;
 }> {
-  const res = await fetch(`${API_BASE}/projects/${projectId}/overview`);
+  const res = await fetchWithFallback(`/projects/${projectId}/overview`);
   if (!res.ok) {
     throw new Error("Failed to load overview");
   }
@@ -525,10 +562,13 @@ export async function generateOverviewQuick(
   try {
     const lang = _lang || "zh";
     const encodedLang = encodeURIComponent(lang);
-    const res = await fetch(`${API_BASE}/projects/${projectId}/overview/generate-quick?lang=${encodedLang}`, {
+    const res = await fetchWithFallback(
+      `/projects/${projectId}/overview/generate-quick?lang=${encodedLang}`,
+      {
       method: "POST",
       signal: controller.signal,
-    });
+      }
+    );
 
     if (!res.ok) {
       throw new Error("Failed to start overview stream");
@@ -585,10 +625,13 @@ export async function generateOverviewFull(
   try {
     const lang = _lang || "zh";
     const encodedLang = encodeURIComponent(lang);
-    const res = await fetch(`${API_BASE}/projects/${projectId}/overview/generate-full?lang=${encodedLang}`, {
+    const res = await fetchWithFallback(
+      `/projects/${projectId}/overview/generate-full?lang=${encodedLang}`,
+      {
       method: "POST",
       signal: controller.signal,
-    });
+      }
+    );
 
     if (!res.ok) {
       throw new Error("Failed to start overview stream");
@@ -615,7 +658,7 @@ export async function getCodeFile(projectId: string, path: string): Promise<{
   language: string;
 }> {
   const encodedPath = encodeURIComponent(path);
-  const res = await fetch(`${API_BASE}/projects/${projectId}/code/file?path=${encodedPath}`);
+  const res = await fetchWithFallback(`/projects/${projectId}/code/file?path=${encodedPath}`);
   if (!res.ok) {
     throw new Error(await readApiErrorDetail(res, "Failed to load code file"));
   }
@@ -636,8 +679,8 @@ export async function getCodeSnippet(
   end_line: number;
 }> {
   const encodedPath = encodeURIComponent(path);
-  const res = await fetch(
-    `${API_BASE}/projects/${projectId}/code/snippet?path=${encodedPath}&start_line=${startLine}&end_line=${endLine}`
+  const res = await fetchWithFallback(
+    `/projects/${projectId}/code/snippet?path=${encodedPath}&start_line=${startLine}&end_line=${endLine}`
   );
   if (!res.ok) {
     throw new Error(await readApiErrorDetail(res, "Failed to load code snippet"));

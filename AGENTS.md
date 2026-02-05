@@ -11,7 +11,7 @@ This file is guidance for agentic coding tools working in this repository.
 Key ports / URLs (local dev):
 
 - Frontend: http://localhost:5173 (`frontend/vite.config.ts`)
-- Backend: http://localhost:8000 (`frontend/src/api.ts` hardcodes API base)
+- Backend: http://localhost:8000 (frontend defaults to relative `/projects/...` + Vite dev proxy; override with `VITE_API_BASE`)
 - Backend OpenAPI: http://localhost:8000/docs
 
 ## Build / lint / test commands

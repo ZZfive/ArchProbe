@@ -2,29 +2,49 @@ import json
 import heapq
 import re
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, cast
 
 
 def build_alignment_map(
     parsed_path: Path, symbol_path: Path, text_index_path: Path
-) -> Dict[str, object]:
+) -> dict[str, object]:
     paper = json.loads(parsed_path.read_text(encoding="utf-8"))
     symbols = _safe_load_json(symbol_path)
     text_index = _safe_load_json(text_index_path)
 
-    symbol_entries = symbols.get("symbols", []) if isinstance(symbols, dict) else []
-    text_entries = text_index.get("entries", []) if isinstance(text_index, dict) else []
+    symbol_entries: list[dict[str, object]] = []
+    if isinstance(symbols, dict):
+        raw_symbols = symbols.get("symbols")
+        if isinstance(raw_symbols, list):
+            for item in raw_symbols:
+                if isinstance(item, dict):
+                    symbol_entries.append(item)
 
-    text_lookup = _build_text_lookup(text_entries)
-    symbol_candidates = _build_symbol_candidates(symbol_entries, text_lookup)
-    file_candidates = _build_file_candidates(text_entries)
+    text_entries: list[dict[str, object]] = []
+    if isinstance(text_index, dict):
+        raw_entries = text_index.get("entries")
+        if isinstance(raw_entries, list):
+            for item in raw_entries:
+                if isinstance(item, dict):
+                    text_entries.append(item)
+
+    text_lookup = _build_text_lookup(cast(list[dict[str, Any]], text_entries))
+    symbol_candidates = _build_symbol_candidates(
+        cast(list[dict[str, Any]], symbol_entries), text_lookup
+    )
+    file_candidates = _build_file_candidates(cast(list[dict[str, Any]], text_entries))
 
     symbol_inverted = _build_inverted_index(symbol_candidates)
     file_inverted = _build_inverted_index(file_candidates)
 
-    results = []
-    for idx, paragraph in enumerate(paper.get("paragraphs", [])):
-        text = paragraph.get("text", "")
+    results: list[dict[str, object]] = []
+    raw_paragraphs = paper.get("paragraphs", []) if isinstance(paper, dict) else []
+    if not isinstance(raw_paragraphs, list):
+        raw_paragraphs = []
+    for idx, paragraph in enumerate(raw_paragraphs):
+        if not isinstance(paragraph, dict):
+            continue
+        text = str(paragraph.get("text", ""))
         tokens = _tokenize(text)
         if not tokens:
             continue
@@ -38,7 +58,7 @@ def build_alignment_map(
         results.append(
             {
                 "paragraph_index": str(idx),
-                "page": paragraph.get("page", ""),
+                "page": str(paragraph.get("page", "")),
                 "text_excerpt": text[:240],
                 "confidence": f"{confidence:.3f}",
                 "matches": matches,
@@ -52,28 +72,34 @@ def build_alignment_map(
     }
 
 
-def write_alignment(dest_path: Path, data: dict) -> None:
+def write_alignment(dest_path: Path, data: dict[str, object]) -> None:
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     dest_path.write_text(
         json.dumps(data, ensure_ascii=True, indent=2), encoding="utf-8"
     )
 
 
-def _safe_load_json(path: Path) -> dict:
+def _safe_load_json(path: Path) -> dict[str, object]:
     if not path.exists():
         return {}
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _tokenize(text: str) -> List[str]:
+def _tokenize(text: str) -> list[str]:
     raw = re.findall(r"[A-Za-z][A-Za-z0-9_]+", text)
     tokens = [token.lower() for token in raw if len(token) >= 4]
+    for run in re.findall(r"[\u4e00-\u9fff]+", text):
+        if len(run) == 1:
+            tokens.append(run)
+        else:
+            for idx in range(len(run) - 1):
+                tokens.append(run[idx : idx + 2])
     return tokens
 
 
-def _split_path_tokens(path: str) -> List[str]:
+def _split_path_tokens(path: str) -> list[str]:
     parts = re.split(r"[\\/_\-.]", path)
-    tokens: List[str] = []
+    tokens: list[str] = []
     for part in parts:
         if not part:
             continue
@@ -81,42 +107,45 @@ def _split_path_tokens(path: str) -> List[str]:
     return [token.lower() for token in tokens if len(token) >= 3]
 
 
-def _split_camel(value: str) -> List[str]:
+def _split_camel(value: str) -> list[str]:
     return re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+", value)
 
 
 def _build_symbol_candidates(
-    entries: List[dict], text_lookup: Dict[str, str]
-) -> List[dict]:
+    entries: list[dict[str, Any]], text_lookup: dict[str, str]
+) -> list[dict[str, object]]:
     candidates = []
     for entry in entries:
-        name = entry.get("name", "")
-        path = entry.get("path", "")
+        raw_name = entry.get("name", "")
+        raw_path = entry.get("path", "")
+        name = raw_name if isinstance(raw_name, str) else str(raw_name)
+        path = raw_path if isinstance(raw_path, str) else str(raw_path)
         tokens = _tokenize(name) + _split_path_tokens(path)
         candidates.append(
             {
                 "kind": "symbol",
                 "path": path,
                 "name": name,
-                "type": entry.get("type", ""),
-                "line": entry.get("line", ""),
-                "excerpt": text_lookup.get(path, ""),
+                "type": str(entry.get("type", "")),
+                "line": str(entry.get("line", "")),
+                "excerpt": str(text_lookup.get(path, "")),
                 "tokens": tokens,
             }
         )
     return candidates
 
 
-def _build_file_candidates(entries: List[dict]) -> List[dict]:
+def _build_file_candidates(entries: list[dict[str, Any]]) -> list[dict[str, object]]:
     candidates = []
     for entry in entries:
-        path = entry.get("path", "")
+        raw_path = entry.get("path", "")
+        path = raw_path if isinstance(raw_path, str) else str(raw_path)
         tokens = _split_path_tokens(path)
         candidates.append(
             {
                 "kind": "file",
                 "path": path,
-                "excerpt": entry.get("excerpt", ""),
+                "excerpt": str(entry.get("excerpt", "")),
                 "tokens": tokens,
             }
         )
@@ -124,83 +153,108 @@ def _build_file_candidates(entries: List[dict]) -> List[dict]:
 
 
 def _rank_candidates(
-    tokens: List[str],
-    symbols: List[dict],
-    files: List[dict],
-    symbol_inverted: Dict[str, List[int]],
-    file_inverted: Dict[str, List[int]],
-) -> tuple[List[dict], float]:
+    tokens: list[str],
+    symbols: list[dict[str, Any]],
+    files: list[dict[str, Any]],
+    symbol_inverted: dict[str, list[int]],
+    file_inverted: dict[str, list[int]],
+) -> tuple[list[dict[str, object]], float]:
     token_set = set(tokens)
 
-    scored: List[dict] = []
+    scored: list[dict[str, object]] = []
     for entry in _iter_candidates(token_set, symbols, symbol_inverted):
-        score, matched = _score_tokens(token_set, entry.get("tokens", []))
+        raw_tokens = entry.get("tokens", [])
+        entry_tokens = (
+            [str(token) for token in raw_tokens] if isinstance(raw_tokens, list) else []
+        )
+        score, matched = _score_tokens(token_set, entry_tokens)
         if score == 0:
             continue
         scored.append(
             {
-                "kind": entry["kind"],
-                "path": entry["path"],
-                "name": entry.get("name", ""),
-                "type": entry.get("type", ""),
-                "line": entry.get("line", ""),
-                "excerpt": entry.get("excerpt", "")[:200],
+                "kind": str(entry.get("kind", "")),
+                "path": str(entry.get("path", "")),
+                "name": str(entry.get("name", "")),
+                "type": str(entry.get("type", "")),
+                "line": str(entry.get("line", "")),
+                "excerpt": str(entry.get("excerpt", ""))[:200],
                 "matched_tokens": matched,
-                "score": str(score),
+                "score": score,
             }
         )
     for entry in _iter_candidates(token_set, files, file_inverted):
-        score, matched = _score_tokens(token_set, entry.get("tokens", []))
+        raw_tokens = entry.get("tokens", [])
+        entry_tokens = (
+            [str(token) for token in raw_tokens] if isinstance(raw_tokens, list) else []
+        )
+        score, matched = _score_tokens(token_set, entry_tokens)
         if score == 0:
             continue
         scored.append(
             {
-                "kind": entry["kind"],
-                "path": entry["path"],
-                "excerpt": entry.get("excerpt", "")[:200],
+                "kind": str(entry.get("kind", "")),
+                "path": str(entry.get("path", "")),
+                "excerpt": str(entry.get("excerpt", ""))[:200],
                 "matched_tokens": matched,
-                "score": str(score),
+                "score": score,
             }
         )
 
-    top = heapq.nlargest(5, scored, key=lambda item: int(item["score"]))
+    def _score_value(item: dict[str, object]) -> int:
+        raw = item.get("score", 0)
+        if isinstance(raw, int):
+            return raw
+        if isinstance(raw, float):
+            return int(raw)
+        if isinstance(raw, str) and raw.isdigit():
+            return int(raw)
+        return 0
+
+    top = heapq.nlargest(5, scored, key=_score_value)
     if not tokens:
         return top, 0.0
-    best = int(top[0]["score"]) if top else 0
+    best = _score_value(top[0]) if top else 0
     confidence = min(best / max(len(set(tokens)), 1), 1.0)
     return top, confidence
 
 
 def _score_tokens(
-    text_tokens: set, candidate_tokens: List[str]
-) -> tuple[int, List[str]]:
+    text_tokens: set[str], candidate_tokens: list[str]
+) -> tuple[int, list[str]]:
     matched = [token for token in candidate_tokens if token in text_tokens]
     return len(matched), matched
 
 
-def _build_text_lookup(entries: List[dict]) -> Dict[str, str]:
-    lookup: Dict[str, str] = {}
+def _build_text_lookup(entries: list[dict[str, Any]]) -> dict[str, str]:
+    lookup: dict[str, str] = {}
     for entry in entries:
-        path = entry.get("path", "")
-        excerpt = entry.get("excerpt", "")
+        raw_path = entry.get("path", "")
+        raw_excerpt = entry.get("excerpt", "")
+        path = raw_path if isinstance(raw_path, str) else str(raw_path)
+        excerpt = raw_excerpt if isinstance(raw_excerpt, str) else str(raw_excerpt)
         if path:
             lookup[path] = excerpt
     return lookup
 
 
-def _build_inverted_index(candidates: List[dict]) -> Dict[str, List[int]]:
-    index: Dict[str, List[int]] = {}
+def _build_inverted_index(candidates: list[dict[str, Any]]) -> dict[str, list[int]]:
+    index: dict[str, list[int]] = {}
     for idx, item in enumerate(candidates):
-        tokens = item.get("tokens", [])
+        raw_tokens = item.get("tokens", [])
+        tokens = (
+            [str(token) for token in raw_tokens] if isinstance(raw_tokens, list) else []
+        )
         for token in set(tokens):
             index.setdefault(token, []).append(idx)
     return index
 
 
 def _iter_candidates(
-    token_set: set, candidates: List[dict], inverted: Dict[str, List[int]]
-) -> List[dict]:
-    seen = set()
+    token_set: set[str],
+    candidates: list[dict[str, Any]],
+    inverted: dict[str, list[int]],
+) -> list[dict[str, object]]:
+    seen: set[int] = set()
     result = []
     for token in token_set:
         for idx in inverted.get(token, []):
