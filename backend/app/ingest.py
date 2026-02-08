@@ -1,4 +1,5 @@
 import hashlib
+import html
 import json
 import re
 from pathlib import Path
@@ -78,7 +79,47 @@ def _split_paragraphs(text: str) -> List[str]:
     return [re.sub(r"\s+", " ", chunk) for chunk in raw]
 
 
-def write_parsed_json(dest_path: Path, data: dict) -> None:
+def fetch_webpage_paragraphs(url: str, max_paragraphs: int = 200) -> List[str]:
+    res = requests.get(url, timeout=30)
+    res.raise_for_status()
+    content_type = str(res.headers.get("Content-Type", "")).lower()
+    text = res.text
+
+    if "html" in content_type or "<html" in text.lower():
+        text = _html_to_text(text)
+
+    paragraphs = _split_paragraphs(text)
+    if len(paragraphs) > max_paragraphs:
+        return paragraphs[:max_paragraphs]
+    return paragraphs
+
+
+def _html_to_text(raw_html: str) -> str:
+    cleaned = re.sub(
+        r"<script\b[^<]*(?:(?!</script>)<[^<]*)*</script>",
+        " ",
+        raw_html,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"<style\b[^<]*(?:(?!</style>)<[^<]*)*</style>",
+        " ",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"<br\s*/?>", "\n", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(
+        r"</(p|div|section|article|li|h[1-6])>", "\n\n", cleaned, flags=re.IGNORECASE
+    )
+    cleaned = re.sub(r"<[^>]+>", " ", cleaned)
+    cleaned = html.unescape(cleaned)
+    cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n")
+    cleaned = re.sub(r"[ \t]+", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def write_parsed_json(dest_path: Path, data: Dict[str, object]) -> None:
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     dest_path.write_text(
         json.dumps(data, ensure_ascii=True, indent=2), encoding="utf-8"

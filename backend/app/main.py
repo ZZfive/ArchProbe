@@ -42,6 +42,7 @@ from .bm25_index import (
 )
 from .ingest import (
     download_pdf,
+    fetch_webpage_paragraphs,
     file_sha256,
     parse_pdf_to_paragraphs,
     resolve_paper_url,
@@ -117,12 +118,14 @@ def on_startup() -> None:
 
 def _row_to_project(row) -> ProjectOut:
     focus_points = json.loads(row["focus_points"]) if row["focus_points"] else None
+    doc_urls = json.loads(row["doc_urls"]) if row["doc_urls"] else None
     return ProjectOut(
         id=row["id"],
         name=row["name"],
         paper_url=row["paper_url"],
         repo_url=row["repo_url"],
         focus_points=focus_points,
+        doc_urls=doc_urls,
         created_at=datetime.fromisoformat(row["created_at"]),
         updated_at=datetime.fromisoformat(row["updated_at"]),
         paper_hash=row["paper_hash"],
@@ -130,21 +133,42 @@ def _row_to_project(row) -> ProjectOut:
     )
 
 
+def _derive_project_name(repo_url: str) -> str:
+    parsed = urlparse(repo_url)
+    path = (parsed.path or "").strip("/")
+    if not path:
+        return "repo-project"
+    parts = [part for part in path.split("/") if part]
+    if not parts:
+        return "repo-project"
+    name = parts[-1]
+    if name.endswith(".git"):
+        name = name[:-4]
+    return name or "repo-project"
+
+
 @app.post("/projects", response_model=ProjectOut)
 def create_project(payload: ProjectCreate) -> ProjectOut:
     project_id = str(uuid4())
     now = datetime.now(timezone.utc).isoformat()
     focus_points = json.dumps(payload.focus_points or [])
+    doc_urls_raw = [
+        str(item).strip() for item in (payload.doc_urls or []) if str(item).strip()
+    ]
+    doc_urls = json.dumps(doc_urls_raw)
+    paper_url = (payload.paper_url or "").strip()
+    name = (payload.name or "").strip() or _derive_project_name(payload.repo_url)
 
     ensure_project_dirs(project_id)
     write_project_meta(
         project_id,
         {
             "id": project_id,
-            "name": payload.name,
-            "paper_url": payload.paper_url,
+            "name": name,
+            "paper_url": paper_url,
             "repo_url": payload.repo_url,
             "focus_points": payload.focus_points or [],
+            "doc_urls": doc_urls_raw,
             "created_at": now,
         },
     )
@@ -153,15 +177,16 @@ def create_project(payload: ProjectCreate) -> ProjectOut:
     try:
         conn.execute(
             """
-            INSERT INTO projects (id, name, paper_url, repo_url, focus_points, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO projects (id, name, paper_url, repo_url, focus_points, doc_urls, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 project_id,
-                payload.name,
-                payload.paper_url,
+                name,
+                paper_url,
                 payload.repo_url,
                 focus_points,
+                doc_urls,
                 now,
                 now,
             ),
@@ -172,10 +197,11 @@ def create_project(payload: ProjectCreate) -> ProjectOut:
 
     return ProjectOut(
         id=project_id,
-        name=payload.name,
-        paper_url=payload.paper_url,
+        name=name,
+        paper_url=paper_url,
         repo_url=payload.repo_url,
         focus_points=payload.focus_points or [],
+        doc_urls=doc_urls_raw,
         created_at=datetime.fromisoformat(now),
         updated_at=datetime.fromisoformat(now),
         paper_hash=None,
@@ -283,7 +309,11 @@ def ingest_paper(project_id: str) -> IngestResponse:
             parsed_path=str(parsed_path),
         )
 
-    pdf_url = resolve_paper_url(row["paper_url"])
+    paper_url = str(row["paper_url"] or "").strip()
+    if not paper_url:
+        raise HTTPException(status_code=400, detail="No paper URL set for this project")
+
+    pdf_url = resolve_paper_url(paper_url)
     if not (pdf_url.startswith("http://") or pdf_url.startswith("https://")):
         raise HTTPException(status_code=400, detail="Invalid paper URL")
     pdf_path = project_dir / "paper" / "paper.pdf"
@@ -515,70 +545,65 @@ def build_vector_indices(project_id: str) -> VectorIndexResponse:
     project_dir = ensure_project_dirs(project_id)
     parsed_path = project_dir / "paper" / "parsed.json"
     text_index_path = project_dir / "code" / "text_index.json"
-    if not parsed_path.exists() or not text_index_path.exists():
+    doc_urls = _parse_doc_urls(row["doc_urls"])
+    doc_items = _load_or_build_doc_parsed(project_dir, doc_urls)
+
+    if not parsed_path.exists() and not text_index_path.exists() and not doc_items:
         raise HTTPException(
-            status_code=400, detail="Run paper ingest and code index first"
+            status_code=400,
+            detail="No indexed content found. Run code index, paper ingest, or provide doc URLs",
         )
 
-    paper_data = json.loads(parsed_path.read_text(encoding="utf-8"))
-    paper_docs = []
-    for idx, paragraph in enumerate(paper_data.get("paragraphs", [])):
-        paper_docs.append(
-            {
-                "doc_id": f"paper:{idx}",
-                "text": paragraph.get("text", ""),
-            }
-        )
+    paper_docs: list[dict[str, str]] = []
+    if parsed_path.exists():
+        paper_data = json.loads(parsed_path.read_text(encoding="utf-8"))
+        for idx, paragraph in enumerate(paper_data.get("paragraphs", [])):
+            paper_docs.append(
+                {
+                    "doc_id": f"paper:{idx}",
+                    "text": str(paragraph.get("text", "")),
+                }
+            )
 
-    code_data = json.loads(text_index_path.read_text(encoding="utf-8"))
-    code_docs = []
-    for entry in code_data.get("entries", []):
-        code_docs.append(
-            {
-                "doc_id": f"code:{entry.get('path', '')}",
-                "text": entry.get("excerpt", ""),
-            }
-        )
+    paper_offset = len(paper_docs)
+    for item in doc_items:
+        raw_paragraphs = item.get("paragraphs", [])
+        if not isinstance(raw_paragraphs, list):
+            continue
+        for paragraph in raw_paragraphs:
+            text = str(paragraph).strip()
+            if not text:
+                continue
+            paper_docs.append({"doc_id": f"paper:{paper_offset}", "text": text})
+            paper_offset += 1
+
+    code_docs: list[dict[str, str]] = []
+    if text_index_path.exists():
+        code_data = json.loads(text_index_path.read_text(encoding="utf-8"))
+        for entry in code_data.get("entries", []):
+            path = str(entry.get("path", "")).strip()
+            if not path:
+                continue
+            start_line = str(entry.get("start_line", "")).strip()
+            end_line = str(entry.get("end_line", "")).strip()
+            if start_line.isdigit() and end_line.isdigit():
+                doc_id = f"code:{path}#{start_line}-{end_line}"
+            else:
+                doc_id = f"code:{path}"
+            code_docs.append(
+                {
+                    "doc_id": doc_id,
+                    "text": str(entry.get("excerpt", "")),
+                }
+            )
+
+    if not paper_docs and not code_docs:
+        raise HTTPException(status_code=400, detail="No chunkable content available")
 
     paper_index_path = project_dir / "paper" / "vector_index.json"
     code_index_path = project_dir / "code" / "vector_index.json"
     paper_bm25_path = project_dir / "paper" / "bm25_index.json"
     code_bm25_path = project_dir / "code" / "bm25_index.json"
-    if (
-        paper_index_path.exists()
-        and code_index_path.exists()
-        and paper_bm25_path.exists()
-        and code_bm25_path.exists()
-    ):
-        now = datetime.now(timezone.utc).isoformat()
-        conn = get_connection()
-        try:
-            conn.execute(
-                """
-                UPDATE projects
-                SET paper_vector_path = ?, code_vector_path = ?, paper_bm25_path = ?, code_bm25_path = ?, updated_at = ?
-                WHERE id = ?
-                """,
-                (
-                    str(paper_index_path),
-                    str(code_index_path),
-                    str(paper_bm25_path),
-                    str(code_bm25_path),
-                    now,
-                    project_id,
-                ),
-            )
-            conn.commit()
-        finally:
-            conn.close()
-
-        return VectorIndexResponse(
-            project_id=project_id,
-            paper_index_path=str(paper_index_path),
-            code_index_path=str(code_index_path),
-            paper_bm25_path=str(paper_bm25_path),
-            code_bm25_path=str(code_bm25_path),
-        )
 
     paper_index = build_vector_index(paper_docs)
     code_index = build_vector_index(code_docs)
@@ -674,20 +699,24 @@ def ask_project(project_id: str, payload: AskRequest) -> AskResponse:
     now = datetime.now(timezone.utc).isoformat()
     existing = read_qa_log(project_id)
     for entry in existing:
-        if (
-            entry.get("question", "").strip().lower()
-            == payload.question.strip().lower()
-        ):
-            created_at = entry.get("created_at") or now
+        question_text = str(entry.get("question", "")).strip()
+        if question_text.lower() == payload.question.strip().lower():
+            created_at_raw = entry.get("created_at")
+            created_at = str(created_at_raw) if created_at_raw else now
             raw_confidence = entry.get("confidence", 0.0)
-            try:
+            if isinstance(raw_confidence, (int, float)):
                 confidence = float(raw_confidence)
-            except (TypeError, ValueError):
+            elif isinstance(raw_confidence, str):
+                try:
+                    confidence = float(raw_confidence)
+                except ValueError:
+                    confidence = 0.0
+            else:
                 confidence = 0.0
             return AskResponse(
                 project_id=project_id,
-                question=entry.get("question", payload.question),
-                answer=entry.get("answer", ""),
+                question=question_text or payload.question,
+                answer=str(entry.get("answer", "")),
                 confidence=confidence,
                 created_at=datetime.fromisoformat(created_at),
             )
@@ -1016,31 +1045,73 @@ def _compute_evidence_mix(evidence: list[dict[str, object]]) -> dict[str, object
 
 
 def _load_paper_paragraphs(project_dir: Path) -> list[dict[str, object]]:
+    out: list[dict[str, object]] = []
     parsed_path = project_dir / "paper" / "parsed.json"
-    if not parsed_path.exists():
-        return []
-    try:
-        paper_data = json.loads(parsed_path.read_text(encoding="utf-8"))
-        raw_paragraphs = paper_data.get("paragraphs", [])
-        if isinstance(raw_paragraphs, list):
-            return raw_paragraphs
-    except (OSError, json.JSONDecodeError):
-        return []
-    return []
+    if parsed_path.exists():
+        try:
+            paper_data = json.loads(parsed_path.read_text(encoding="utf-8"))
+            raw_paragraphs = paper_data.get("paragraphs", [])
+            if isinstance(raw_paragraphs, list):
+                for paragraph in raw_paragraphs:
+                    if isinstance(paragraph, dict):
+                        out.append(paragraph)
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    docs_path = project_dir / "docs" / "parsed.json"
+    if docs_path.exists():
+        try:
+            doc_data = json.loads(docs_path.read_text(encoding="utf-8"))
+            items = doc_data.get("items", []) if isinstance(doc_data, dict) else []
+            if isinstance(items, list):
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    url = str(item.get("url", ""))
+                    paragraphs = item.get("paragraphs", [])
+                    if not isinstance(paragraphs, list):
+                        continue
+                    for para in paragraphs:
+                        text = str(para).strip()
+                        if not text:
+                            continue
+                        out.append({"page": "", "text": text, "source_url": url})
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    return out
 
 
-def _load_code_excerpts(project_dir: Path) -> dict[str, str]:
+def _load_code_chunks(project_dir: Path) -> dict[str, dict[str, object]]:
     text_index_path = project_dir / "code" / "text_index.json"
     if not text_index_path.exists():
         return {}
-    out: dict[str, str] = {}
+    out: dict[str, dict[str, object]] = {}
     try:
         code_data = json.loads(text_index_path.read_text(encoding="utf-8"))
         for entry in code_data.get("entries", []):
-            path = entry.get("path")
-            excerpt = entry.get("excerpt")
-            if path and excerpt and path not in out:
-                out[str(path)] = str(excerpt)
+            path = str(entry.get("path", "")).strip()
+            excerpt = str(entry.get("excerpt", ""))
+            if not path or not excerpt:
+                continue
+            start_line = str(entry.get("start_line", "")).strip()
+            end_line = str(entry.get("end_line", "")).strip()
+            if start_line.isdigit() and end_line.isdigit():
+                doc_id = f"code:{path}#{start_line}-{end_line}"
+                out[doc_id] = {
+                    "path": path,
+                    "start_line": int(start_line),
+                    "end_line": int(end_line),
+                    "excerpt": excerpt,
+                }
+            base_doc_id = f"code:{path}"
+            if base_doc_id not in out:
+                out[base_doc_id] = {
+                    "path": path,
+                    "start_line": None,
+                    "end_line": None,
+                    "excerpt": excerpt,
+                }
     except (OSError, json.JSONDecodeError):
         return {}
     return out
@@ -1059,7 +1130,7 @@ def _build_routed_evidence(
         query_text = query_text + "\n\nFocus points: " + ", ".join(focus_points)
 
     paper_paragraphs = _load_paper_paragraphs(project_dir)
-    code_excerpts = _load_code_excerpts(project_dir)
+    code_chunks = _load_code_chunks(project_dir)
 
     want_paper = route in {"paper_only", "hybrid", "fallback"}
     want_code = route in {"code_only", "hybrid", "fallback"}
@@ -1107,6 +1178,9 @@ def _build_routed_evidence(
                         paragraph = paper_paragraphs[idx]
                         ev["paragraph_index"] = str(idx)
                         ev["page"] = str(paragraph.get("page", ""))
+                        source_url = str(paragraph.get("source_url", "")).strip()
+                        if source_url:
+                            ev["source_url"] = source_url
                         ev["text_excerpt"] = str(paragraph.get("text", ""))[:240]
             paper_evidence.append(ev)
 
@@ -1118,6 +1192,7 @@ def _build_routed_evidence(
                 "score": 0.0,
                 "paragraph_index": str(idx),
                 "page": str(paragraph.get("page", "")),
+                "source_url": str(paragraph.get("source_url", "")),
                 "text_excerpt": str(paragraph.get("text", ""))[:240],
             }
             paper_evidence.append(ev)
@@ -1146,23 +1221,41 @@ def _build_routed_evidence(
                 "score": score,
             }
             if isinstance(doc_id, str) and doc_id.startswith("code:"):
-                rel = doc_id.split(":", 1)[1]
-                if rel:
-                    ev["path"] = rel
-                    ev["excerpt"] = code_excerpts.get(rel, "")[:240]
+                meta = code_chunks.get(doc_id)
+                if not meta:
+                    rel = doc_id.split(":", 1)[1]
+                    if "#" in rel:
+                        rel = rel.split("#", 1)[0]
+                    meta = code_chunks.get(f"code:{rel}")
+                if meta:
+                    ev["path"] = str(meta.get("path", ""))
+                    start_line = meta.get("start_line")
+                    if isinstance(start_line, int) and start_line > 0:
+                        ev["start_line"] = start_line
+                    end_line = meta.get("end_line")
+                    if isinstance(end_line, int) and end_line > 0:
+                        ev["end_line"] = end_line
+                    ev["excerpt"] = str(meta.get("excerpt", ""))[:800]
             code_evidence.append(ev)
 
-    if route in {"code_only", "hybrid"} and not code_evidence and code_excerpts:
-        for rel, excerpt in sorted(code_excerpts.items())[:3]:
+    if route in {"code_only", "hybrid"} and not code_evidence and code_chunks:
+        seen_paths: set[str] = set()
+        for meta in code_chunks.values():
+            rel = str(meta.get("path", "")).strip()
+            if not rel or rel in seen_paths:
+                continue
+            seen_paths.add(rel)
             code_evidence.append(
                 {
                     "kind": "code_fallback",
                     "doc_id": f"code:{rel}",
                     "score": 0.0,
                     "path": rel,
-                    "excerpt": str(excerpt)[:240],
+                    "excerpt": str(meta.get("excerpt", ""))[:800],
                 }
             )
+            if len(code_evidence) >= 3:
+                break
 
     evidence.extend(paper_evidence)
     evidence.extend(code_evidence)
@@ -1296,6 +1389,34 @@ def _rrf_fuse(
 
 def _extract_code_refs(evidence: list[dict[str, object]]) -> list[dict[str, object]]:
     return _extract_code_refs_for_question(evidence, question="", project_dir=None)
+
+
+def _derive_line_number_from_excerpt(file_content: str, excerpt: str) -> int:
+    """Derive line number by locating excerpt in file content."""
+    if not file_content or not excerpt:
+        return 0
+
+    file_content = file_content.replace("\r\n", "\n").replace("\r", "\n")
+    excerpt = excerpt.replace("\r\n", "\n").replace("\r", "\n")
+
+    excerpt_stripped = excerpt.strip()
+    if len(excerpt_stripped) >= 50:
+        window = excerpt_stripped[:300]
+        pos = file_content.find(window)
+        if pos >= 0:
+            return file_content[:pos].count("\n") + 1
+
+    lines = [line.strip() for line in excerpt.split("\n") if line.strip()]
+    if not lines:
+        return 0
+
+    longest_line = max(lines, key=len)
+    if len(longest_line) >= 10:
+        pos = file_content.find(longest_line)
+        if pos >= 0:
+            return file_content[:pos].count("\n") + 1
+
+    return 0
 
 
 def _extract_code_refs_for_question(
@@ -1520,7 +1641,38 @@ def _extract_code_refs_for_question(
             refs.append(_make_ref(path, line_num, name))
             scored_added += 1
 
-    # 3) If symbol scoring yields nothing, fall back to file-level refs (line=1).
+    if len(refs) < target_refs and project_dir is not None:
+        file_cache: dict[str, str] = {}
+        for item in evidence:
+            if len(refs) >= max_refs or len(refs) >= target_refs:
+                break
+            kind = str(item.get("kind", ""))
+            if kind != "code_hybrid":
+                continue
+            path = str(item.get("path", ""))
+            excerpt = str(item.get("excerpt", ""))
+            if not path or not excerpt:
+                continue
+
+            if any(ref["path"] == path for ref in refs):
+                continue
+
+            try:
+                if path not in file_cache:
+                    file_cache[path] = _read_repo_text_file(
+                        project_dir / "code" / "repo", path
+                    )
+
+                file_content = file_cache[path]
+                derived_line = _derive_line_number_from_excerpt(file_content, excerpt)
+                if derived_line > 0:
+                    key = (path, derived_line, "")
+                    if key not in seen:
+                        seen.add(key)
+                        refs.append(_make_ref(path, derived_line, ""))
+            except Exception:
+                continue
+
     if len(refs) < target_refs and scored_added == 0 and evidence_paths:
         for path in sorted(evidence_paths):
             if len(refs) >= max_refs or len(refs) >= target_refs:
@@ -1544,6 +1696,72 @@ def _parse_focus_points(raw_focus: str | None) -> list[str]:
     except json.JSONDecodeError:
         return []
     return []
+
+
+def _parse_doc_urls(raw_doc_urls: str | None) -> list[str]:
+    if not raw_doc_urls:
+        return []
+    try:
+        parsed = json.loads(raw_doc_urls)
+        if isinstance(parsed, list):
+            out: list[str] = []
+            for item in parsed:
+                value = str(item).strip()
+                if value:
+                    out.append(value)
+            return out
+    except json.JSONDecodeError:
+        return []
+    return []
+
+
+def _load_or_build_doc_parsed(
+    project_dir: Path, doc_urls: list[str]
+) -> list[dict[str, object]]:
+    if not doc_urls:
+        return []
+    docs_path = project_dir / "docs" / "parsed.json"
+
+    if docs_path.exists():
+        try:
+            cached = json.loads(docs_path.read_text(encoding="utf-8"))
+            cached_urls = cached.get("urls", []) if isinstance(cached, dict) else []
+            cached_items = cached.get("items", []) if isinstance(cached, dict) else []
+            if isinstance(cached_urls, list) and isinstance(cached_items, list):
+                normalized_cached = [
+                    str(url).strip() for url in cached_urls if str(url).strip()
+                ]
+                if normalized_cached == doc_urls:
+                    return [item for item in cached_items if isinstance(item, dict)]
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    items: list[dict[str, object]] = []
+    for url in doc_urls:
+        try:
+            paragraphs = fetch_webpage_paragraphs(url)
+        except requests.RequestException:
+            continue
+        except ValueError:
+            continue
+        if not paragraphs:
+            continue
+        items.append(
+            {
+                "url": url,
+                "paragraphs": paragraphs,
+            }
+        )
+
+    payload = {
+        "urls": doc_urls,
+        "items": items,
+    }
+    docs_path.parent.mkdir(parents=True, exist_ok=True)
+    docs_path.write_text(
+        json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8"
+    )
+    return items
 
 
 def _detect_language_from_path(rel_path: str) -> str:

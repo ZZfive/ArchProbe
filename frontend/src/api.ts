@@ -23,6 +23,10 @@ async function fetchWithFallback(path: string, init?: RequestInit): Promise<Resp
   try {
     return await fetch(primary, init);
   } catch (err) {
+    // Don't retry on AbortError - user explicitly cancelled the request
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw err;
+    }
     // If API_BASE is configured but not reachable from the browser (common with VSCode port forwarding),
     // retry same-origin relative path so Vite proxy can forward to backend.
     if (!API_BASE) throw err;
@@ -65,6 +69,7 @@ export type Project = {
   paper_url: string;
   repo_url: string;
   focus_points?: string[] | null;
+  doc_urls?: string[] | null;
   created_at: string;
   updated_at: string;
   paper_hash?: string | null;
@@ -87,10 +92,11 @@ export async function listProjects(): Promise<Project[]> {
 }
 
 export async function createProject(payload: {
-  name: string;
-  paper_url: string;
+  name?: string;
+  paper_url?: string;
   repo_url: string;
   focus_points?: string[];
+  doc_urls?: string[];
 }): Promise<Project> {
   const res = await fetchWithFallback(`/projects`, {
     method: "POST",
@@ -228,19 +234,9 @@ export async function askProjectStream(
     let doneInsufficientEvidence: boolean | undefined;
     let reportedParseError = false;
 
-    for await (const evt of iterateSseEvents(res)) {
-      let data: {
-        chunk?: string;
-        done?: boolean;
-        answer?: string;
-        code_refs?: CodeRef[];
-        route?: string;
-        evidence_mix?: EvidenceMix;
-        insufficient_evidence?: boolean;
-        error?: string;
-      };
-      try {
-        data = JSON.parse(evt.data) as {
+    try {
+      for await (const evt of iterateSseEvents(res)) {
+        let data: {
           chunk?: string;
           done?: boolean;
           answer?: string;
@@ -250,13 +246,24 @@ export async function askProjectStream(
           insufficient_evidence?: boolean;
           error?: string;
         };
-      } catch {
-        if (!reportedParseError) {
-          reportedParseError = true;
-          onError("Malformed stream event (failed to parse SSE data as JSON)");
+        try {
+          data = JSON.parse(evt.data) as {
+            chunk?: string;
+            done?: boolean;
+            answer?: string;
+            code_refs?: CodeRef[];
+            route?: string;
+            evidence_mix?: EvidenceMix;
+            insufficient_evidence?: boolean;
+            error?: string;
+          };
+        } catch {
+          if (!reportedParseError) {
+            reportedParseError = true;
+            onError("Malformed stream event (failed to parse SSE data as JSON)");
+          }
+          continue;
         }
-        continue;
-      }
 
       if (data.chunk) {
         fullAnswer += data.chunk;
@@ -295,6 +302,12 @@ export async function askProjectStream(
         return;
       }
     }
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        return;
+      }
+      throw err;
+    }
 
     onComplete({
       answer: fullAnswer,
@@ -316,10 +329,7 @@ type SseEvent = {
   data: string;
 };
 
-function normalizeSseNewlines(text: string): string {
-  // Handle CRLF and CR-only newlines so framing + JSON parsing stay consistent.
-  return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-}
+
 
 function parseSseEvent(rawEvent: string): SseEvent | null {
   const lines = rawEvent.split("\n");
@@ -328,7 +338,7 @@ function parseSseEvent(rawEvent: string): SseEvent | null {
 
   for (const line of lines) {
     if (line.length === 0) continue;
-    if (line.startsWith(":")) continue; // comment
+    if (line.startsWith(":")) continue;
 
     const colonIdx = line.indexOf(":");
     const field = colonIdx === -1 ? line : line.slice(0, colonIdx);
@@ -354,14 +364,64 @@ async function* iterateSseEvents(res: Response): AsyncGenerator<SseEvent, void, 
 
   const decoder = new TextDecoder();
   let buffer = "";
+  let pendingCR = false;
+
+  const processChunk = (chunk: string): void => {
+    let processed = "";
+    let start = 0;
+    
+    if (pendingCR) {
+      if (chunk.length === 0) {
+        processed += '\n';
+        pendingCR = false;
+        start = 0;
+      } else if (chunk[0] === '\n') {
+        processed += '\n';
+        pendingCR = false;
+        start = 1;
+      } else {
+        processed += '\n';
+        pendingCR = false;
+        start = 0;
+      }
+    }
+    
+    for (let i = start; i < chunk.length; i++) {
+      const char = chunk[i];
+      if (char === '\r') {
+        if (i === chunk.length - 1) {
+          pendingCR = true;
+        } else if (chunk[i + 1] === '\n') {
+          processed += '\n';
+          i++;
+        } else {
+          processed += '\n';
+        }
+      } else if (char === '\n') {
+        if (pendingCR) {
+          processed += '\n';
+          pendingCR = false;
+        } else {
+          processed += '\n';
+        }
+      } else {
+        if (pendingCR) {
+          processed += '\n';
+          pendingCR = false;
+        }
+        processed += char;
+      }
+    }
+    buffer += processed;
+  };
 
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
 
-      buffer += decoder.decode(value, { stream: true });
-      buffer = normalizeSseNewlines(buffer);
+      const chunk = decoder.decode(value, { stream: true });
+      processChunk(chunk);
 
       while (true) {
         const boundaryIdx = buffer.indexOf("\n\n");
@@ -376,7 +436,16 @@ async function* iterateSseEvents(res: Response): AsyncGenerator<SseEvent, void, 
       }
     }
 
-    buffer = normalizeSseNewlines(buffer);
+    const finalChunk = decoder.decode();
+    if (finalChunk) {
+      processChunk(finalChunk);
+    }
+
+    if (pendingCR) {
+      buffer += '\n';
+      pendingCR = false;
+    }
+
     if (buffer.trim().length > 0) {
       const evt = parseSseEvent(buffer);
       if (evt) yield evt;
@@ -499,29 +568,36 @@ async function readStream(
 ): Promise<void> {
   let reportedParseError = false;
 
-  for await (const evt of iterateSseEvents(res)) {
-    let data: { chunk?: string; done?: boolean; error?: string };
-    try {
-      data = JSON.parse(evt.data) as { chunk?: string; done?: boolean; error?: string };
-    } catch {
-      if (!reportedParseError) {
-        reportedParseError = true;
-        onError("Malformed stream event (failed to parse SSE data as JSON)");
+  try {
+    for await (const evt of iterateSseEvents(res)) {
+      let data: { chunk?: string; done?: boolean; error?: string };
+      try {
+        data = JSON.parse(evt.data) as { chunk?: string; done?: boolean; error?: string };
+      } catch {
+        if (!reportedParseError) {
+          reportedParseError = true;
+          onError("Malformed stream event (failed to parse SSE data as JSON)");
+        }
+        continue;
       }
-      continue;
-    }
 
-    if (data.chunk) {
-      onChunk(data.chunk);
+      if (data.chunk) {
+        onChunk(data.chunk);
+      }
+      if (data.done) {
+        onDone();
+        return;
+      }
+      if (data.error) {
+        onError(data.error);
+        return;
+      }
     }
-    if (data.done) {
-      onDone();
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
       return;
     }
-    if (data.error) {
-      onError(data.error);
-      return;
-    }
+    throw err;
   }
 }
 

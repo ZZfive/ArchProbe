@@ -75,7 +75,13 @@ export default function App() {
   const [busyAction, setBusyAction] = useState<
     null | "create" | "delete" | "ingest" | "index" | "align" | "vectors" | "ask"
   >(null);
-  const [form, setForm] = useState({ name: "", paper_url: "", repo_url: "", focus_points: "" });
+  const [form, setForm] = useState({
+    name: "",
+    paper_url: "",
+    repo_url: "",
+    doc_urls: "",
+    focus_points: "",
+  });
   const [createError, setCreateError] = useState<string | null>(null);
   const [chatError, setChatError] = useState<string | null>(null);
   const [pipelineError, setPipelineError] = useState<string | null>(null);
@@ -221,6 +227,7 @@ export default function App() {
   const codeViewerBodyRef = useRef<HTMLDivElement | null>(null);
   const askRunIdRef = useRef(0);
   const overviewRunIdRef = useRef(0);
+  const selectedProjectLoadRunIdRef = useRef(0);
 
   function isAbortError(err: unknown): boolean {
     return (
@@ -282,6 +289,28 @@ export default function App() {
     return trimmed.split(",").map((item) => item.trim()).filter(Boolean);
   }, [form.focus_points]);
 
+  const docUrls = useMemo(() => {
+    const trimmed = form.doc_urls.trim();
+    if (!trimmed) return [];
+    return trimmed.split(",").map((item) => item.trim()).filter(Boolean);
+  }, [form.doc_urls]);
+
+  function deriveNameFromRepoUrl(repoUrl: string): string {
+    const trimmed = repoUrl.trim();
+    if (!trimmed) return "";
+    try {
+      const parsed = new URL(trimmed);
+      const parts = parsed.pathname.split("/").filter(Boolean);
+      if (parts.length === 0) return "";
+      const leaf = parts[parts.length - 1].replace(/\.git$/i, "");
+      return leaf;
+    } catch {
+      const parts = trimmed.split("/").filter(Boolean);
+      if (parts.length === 0) return "";
+      return parts[parts.length - 1].replace(/\.git$/i, "");
+    }
+  }
+
   function codeSnippetKey(projectId: string, ref: CodeRef): string {
     return `${projectId}::${ref.path}::${ref.start_line}-${ref.end_line}`;
   }
@@ -342,6 +371,7 @@ export default function App() {
   }
 
   async function ensureCodeSnippetsForRefs(projectId: string, refs: CodeRef[]): Promise<void> {
+    if (selectedIdRef.current !== projectId) return;
     const uniqueKeys = new Set<string>();
     const uniqueRefs: CodeRef[] = [];
     for (const ref of refs) {
@@ -391,6 +421,7 @@ export default function App() {
   useEffect(() => {
     askRunIdRef.current += 1;
     overviewRunIdRef.current += 1;
+    selectedProjectLoadRunIdRef.current += 1;
     abortAskProjectStream();
     abortOverviewStream();
 
@@ -408,15 +439,25 @@ export default function App() {
       return;
     }
     setLoadingProject(true);
+    const runId = selectedProjectLoadRunIdRef.current;
+    const projectId = selectedId;
     Promise.all([getProject(selectedId), getQaLog(selectedId)])
       .then(([project, qaResp]) => {
+        if (selectedProjectLoadRunIdRef.current !== runId) return;
+        if (selectedIdRef.current !== projectId) return;
         setSelectedProject(project);
         setQaLog(qaResp.entries || []);
       })
       .catch((err) => {
+        if (selectedProjectLoadRunIdRef.current !== runId) return;
+        if (selectedIdRef.current !== projectId) return;
         setPipelineError(err.message);
       })
-      .finally(() => setLoadingProject(false));
+      .finally(() => {
+        if (selectedProjectLoadRunIdRef.current !== runId) return;
+        if (selectedIdRef.current !== projectId) return;
+        setLoadingProject(false);
+      });
   }, [selectedId]);
 
   useEffect(() => {
@@ -469,12 +510,13 @@ export default function App() {
     setBusyAction("create");
     try {
       const created = await createProject({
-        name: form.name.trim(),
-        paper_url: form.paper_url.trim(),
+        name: form.name.trim() || undefined,
+        paper_url: form.paper_url.trim() || undefined,
         repo_url: form.repo_url.trim(),
+        doc_urls: docUrls,
         focus_points: focusPoints,
       });
-      setForm({ name: "", paper_url: "", repo_url: "", focus_points: "" });
+      setForm({ name: "", paper_url: "", repo_url: "", doc_urls: "", focus_points: "" });
       await refreshProjects();
       setSelectedId(created.id);
       closeCreate();
@@ -526,36 +568,44 @@ export default function App() {
 
   async function handleIngest() {
     if (!selectedId) return;
+    const projectId = selectedId;
     setPipelineError(null);
     setBusyAction("ingest");
     try {
       await ingestProject(selectedId);
       const project = await getProject(selectedId);
       const qaResp = await getQaLog(selectedId);
+      if (selectedIdRef.current !== projectId) return;
       setSelectedProject(project);
       setQaLog(qaResp.entries || []);
     } catch (err) {
+      if (selectedIdRef.current !== projectId) return;
       if (err instanceof Error) {
         setPipelineError(err.message);
       }
     } finally {
+      if (selectedIdRef.current !== projectId) return;
       setBusyAction(null);
     }
   }
 
   async function handleIndexCode() {
     if (!selectedId) return;
+    const projectId = selectedId;
     setPipelineError(null);
     setBusyAction("index");
     try {
       await indexCode(selectedId);
       const project = await getProject(selectedId);
+      if (selectedIdRef.current !== projectId) return;
       setSelectedProject(project);
     } catch (err) {
+      if (selectedIdRef.current !== projectId) return;
       if (err instanceof Error) {
         setPipelineError(err.message);
       }
     } finally {
+      if (selectedIdRef.current !== projectId) return;
       setBusyAction(null);
     }
   }
@@ -644,6 +694,7 @@ export default function App() {
       }
     } finally {
       if (askRunIdRef.current !== runId) return;
+      if (selectedIdRef.current !== projectId) return;
       setIsStreaming(false);
       setStreamingAnswer(null);
       setBusyAction(null);
@@ -716,34 +767,42 @@ export default function App() {
 
   async function handleAlign() {
     if (!selectedId) return;
+    const projectId = selectedId;
     setPipelineError(null);
     setBusyAction("align");
     try {
       await alignProject(selectedId);
       const project = await getProject(selectedId);
+      if (selectedIdRef.current !== projectId) return;
       setSelectedProject(project);
     } catch (err) {
+      if (selectedIdRef.current !== projectId) return;
       if (err instanceof Error) {
         setPipelineError(err.message);
       }
     } finally {
+      if (selectedIdRef.current !== projectId) return;
       setBusyAction(null);
     }
   }
 
   async function handleBuildVectors() {
     if (!selectedId) return;
+    const projectId = selectedId;
     setPipelineError(null);
     setBusyAction("vectors");
     try {
       await buildVectors(selectedId);
       const project = await getProject(selectedId);
+      if (selectedIdRef.current !== projectId) return;
       setSelectedProject(project);
     } catch (err) {
+      if (selectedIdRef.current !== projectId) return;
       if (err instanceof Error) {
         setPipelineError(err.message);
       }
     } finally {
+      if (selectedIdRef.current !== projectId) return;
       setBusyAction(null);
     }
   }
@@ -1305,16 +1364,34 @@ export default function App() {
                       value={form.paper_url}
                       onChange={(e) => setForm({ ...form, paper_url: e.target.value })}
                       placeholder="https://arxiv.org/abs/xxxx"
-                      required
                     />
                   </label>
                   <label>
                     {t.repoUrl}
                     <input
                       value={form.repo_url}
-                      onChange={(e) => setForm({ ...form, repo_url: e.target.value })}
+                      onChange={(e) => {
+                        const nextRepo = e.target.value;
+                        setForm((prev) => {
+                          const autoName = deriveNameFromRepoUrl(nextRepo);
+                          const shouldAutoFill = !prev.name.trim();
+                          return {
+                            ...prev,
+                            repo_url: nextRepo,
+                            name: shouldAutoFill ? autoName : prev.name,
+                          };
+                        });
+                      }}
                       placeholder="https://github.com/org/repo"
                       required
+                    />
+                  </label>
+                  <label>
+                    {lang === "zh" ? "文档链接（可选，逗号分隔）" : "Doc URLs (optional, comma-separated)"}
+                    <input
+                      value={form.doc_urls}
+                      onChange={(e) => setForm({ ...form, doc_urls: e.target.value })}
+                      placeholder="https://example.com/blog-1, https://example.com/blog-2"
                     />
                   </label>
                 </>
@@ -1354,7 +1431,7 @@ export default function App() {
                     type="button"
                     className="primary"
                     onClick={() => setCreateStep(2)}
-                    disabled={isBusyCreate || !form.name.trim() || !form.paper_url.trim() || !form.repo_url.trim()}
+                    disabled={isBusyCreate || !form.repo_url.trim()}
                   >
                     {lang === "zh" ? "下一步" : "Next"}
                   </button>

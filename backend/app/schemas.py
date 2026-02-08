@@ -5,10 +5,11 @@ from pydantic import BaseModel, Field
 
 
 class ProjectCreate(BaseModel):
-    name: str = Field(..., min_length=1)
-    paper_url: str = Field(..., min_length=1)
+    name: Optional[str] = None
+    paper_url: Optional[str] = None
     repo_url: str = Field(..., min_length=1)
     focus_points: Optional[List[str]] = None
+    doc_urls: Optional[List[str]] = None
 
 
 class ProjectOut(BaseModel):
@@ -17,6 +18,7 @@ class ProjectOut(BaseModel):
     paper_url: str
     repo_url: str
     focus_points: Optional[List[str]] = None
+    doc_urls: Optional[List[str]] = None
     created_at: datetime
     updated_at: datetime
     paper_hash: Optional[str] = None

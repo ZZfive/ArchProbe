@@ -121,6 +121,8 @@ def build_symbol_index(repo_dir: Path, paths: Iterable[Path]) -> List[Dict[str, 
 
 def build_text_index(repo_dir: Path, paths: Iterable[Path]) -> List[Dict[str, str]]:
     entries: List[Dict[str, str]] = []
+    chunk_lines = 160
+    overlap_lines = 40
     for path in paths:
         rel = str(path.relative_to(repo_dir))
         if _should_skip_rel_path(rel):
@@ -131,13 +133,26 @@ def build_text_index(repo_dir: Path, paths: Iterable[Path]) -> List[Dict[str, st
         content = _safe_read_text(path)
         if content is None:
             continue
-        entries.append(
-            {
-                "path": rel,
-                "ext": ext,
-                "excerpt": content[:2000],
-            }
-        )
+        lines = content.splitlines()
+        if not lines:
+            continue
+        step = max(1, chunk_lines - overlap_lines)
+        for start_idx in range(0, len(lines), step):
+            end_idx = min(start_idx + chunk_lines, len(lines))
+            excerpt = "\n".join(lines[start_idx:end_idx]).strip()
+            if not excerpt:
+                continue
+            entries.append(
+                {
+                    "path": rel,
+                    "ext": ext,
+                    "start_line": str(start_idx + 1),
+                    "end_line": str(end_idx),
+                    "excerpt": excerpt,
+                }
+            )
+            if end_idx >= len(lines):
+                break
     return entries
 
 

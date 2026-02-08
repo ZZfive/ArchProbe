@@ -20,6 +20,7 @@ def init_db() -> None:
                 paper_url TEXT NOT NULL,
                 repo_url TEXT NOT NULL,
                 focus_points TEXT,
+                doc_urls TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 paper_hash TEXT,
@@ -44,6 +45,7 @@ def init_db() -> None:
         # Define all columns that should exist
         required_columns = [
             ("focus_points", "TEXT"),
+            ("doc_urls", "TEXT"),
             ("paper_hash", "TEXT"),
             ("repo_hash", "TEXT"),
             ("paper_parsed_path", "TEXT"),

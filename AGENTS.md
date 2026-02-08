@@ -1,171 +1,146 @@
 # AGENTS.md
 
-This file is guidance for agentic coding tools working in this repository.
+Guidance for agentic coding tools working in this repository.
 
-## Repo layout
+## Repo Layout
 
 - `backend/`: FastAPI service (Python) providing the API and writing runtime state.
 - `frontend/`: Vite + React + TypeScript UI.
-- Runtime data (not source): `projects/` and `backend/app.db` (both are gitignored).
+- Runtime data (not source-of-truth): `projects/` and `backend/app.db` (gitignored).
 
-Key ports / URLs (local dev):
+Local dev URLs:
+- Frontend: http://localhost:5173 (Vite may auto-increment to 5174)
+- Backend: http://localhost:8000
+- OpenAPI: http://localhost:8000/docs
 
-- Frontend: http://localhost:5173 (`frontend/vite.config.ts`)
-- Backend: http://localhost:8000 (frontend defaults to relative `/projects/...` + Vite dev proxy; override with `VITE_API_BASE`)
-- Backend OpenAPI: http://localhost:8000/docs
+Remote dev (VSCode SSH / Port Forwarding):
+- Frontend runs on the server, but your browser is local.
+- Do NOT hardcode `http://localhost:8000` in the frontend unless 8000 is also forwarded.
+- Default behavior: frontend calls backend via relative `/projects/...` and Vite proxy forwards to `127.0.0.1:8000`.
+- Optional: set `VITE_API_BASE` to an address reachable by the browser (e.g. forwarded backend port).
 
-## Build / lint / test commands
+## Build / Lint / Test
 
 ### Frontend (Node)
 
 From `frontend/`:
-
 - Install deps: `npm ci`
 - Dev server: `npm run dev`
-- Production build (includes typecheck): `npm run build` (runs `tsc -b && vite build`)
-- Preview production build: `npm run preview`
+- Prod build (includes typecheck): `npm run build` (runs `tsc -b && vite build`)
+- Preview build: `npm run preview`
 
 Notes:
-
-- There is no `lint` or `test` script in `frontend/package.json` today.
+- No dedicated `lint` or unit-test scripts currently.
+- Dev proxy is configured in `frontend/vite.config.ts` for `/projects` → `http://127.0.0.1:8000`.
 
 ### Backend (Python)
 
 From repo root:
-
 - Create venv: `python -m venv .venv`
 - Activate: `source .venv/bin/activate`
 - Install deps: `pip install -r backend/requirements.txt`
 
-Run the API (from `backend/`):
-
+Run API (from `backend/`):
 - `uvicorn app.main:app --reload --port 8000`
 
-Notes:
+GPU acceleration (FAISS / embeddings):
+- FAISS GPU is installed via conda in CUDA environments (recommended):
+  - `conda create -n archprobe-backend python=3.11 -y`
+  - `conda activate archprobe-backend`
+  - `conda install -c pytorch faiss-gpu -y`
+  - `pip install -r backend/requirements-gpu.txt`
+- Env toggles:
+  - `FAISS_USE_GPU=auto|1|0` (default `auto`)
+  - `FASTEMBED_DEVICE=auto|cuda|cpu` (default `auto`)
+  - Offline embedding cache: set `FASTEMBED_CACHE_DIR` (or `FASTEMBED_CACHE_PATH`) and enforce `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`
 
-- No test/lint tooling is defined in-repo (no pytest/ruff/black configs, no CI workflows).
-- Backend CORS allows loopback dev origins (localhost/127.0.0.1/[::1]) on any port (Vite may move from 5173 to 5174 if 5173 is taken).
+Basic “lint/health” commands (current state):
+- `python -m compileall backend/app`
+- Optional typecheck: `python -m basedpyright backend/app` (no strict config; treat as advisory)
 
-### Running a single test (current state)
+Proxy pitfall:
+- Dev shells may export `HTTP_PROXY/HTTPS_PROXY` which can break localhost curl.
+- Use `curl --noproxy '*' http://127.0.0.1:8000/projects` when debugging locally on the server.
 
-Not currently applicable: the repo does not ship a test runner configuration.
+### Verification (Manual QA)
 
-If/when tests are added, prefer these conventional invocations:
+There is a small manual QA runner (no external deps):
+- `tests/qa/qa_runner.py` runs a question set against `/projects/{id}/ask-stream` and saves JSON.
 
+Example:
+```bash
+python tests/qa/qa_runner.py --project-id <PROJECT_ID> --in tests/qa/qa_set.json --out tests/qa/runs/latest.json
+```
+
+Running a single test (future convention):
 - Python/pytest: `pytest path/to/test_file.py::test_name` or `pytest -k "substring"`
 - JS/Vitest: `vitest path/to/file.test.ts -t "test name"`
 
-## Environment variables (backend)
+## Environment Variables
 
-LLM configuration is optional; without `LLM_API_KEY` the app returns placeholder answers.
+Backend LLM config (optional; without `LLM_API_KEY` answers may be placeholders):
+- `LLM_PROVIDER` (default `api`)
+- `LLM_API_BASE` (default `https://api.openai.com/v1`)
+- `LLM_API_KEY` (default empty)
+- `LLM_MODEL` (default `gpt-4o-mini`)
 
-- `LLM_PROVIDER` (default: `api`)
-- `LLM_API_BASE` (default: `https://api.openai.com/v1`)
-- `LLM_API_KEY` (default: empty)
-- `LLM_MODEL` (default: `gpt-4o-mini`)
-
-Index/ingest limits (useful for large inputs):
-
+Index/ingest limits:
 - `CODE_INDEX_MAX_FILES`, `CODE_INDEX_MAX_TOTAL_BYTES`, `CODE_INDEX_MAX_FILE_BYTES`
 - `CODE_INDEX_IGNORE_DIRS`, `CODE_INDEX_IGNORE_EXTS`
 - `PAPER_MAX_PDF_BYTES`, `PAPER_MAX_PAGES`, `PAPER_MAX_PARAGRAPHS`
 
-## Key features (recent additions)
+Frontend:
+- `VITE_API_BASE` (optional; if set, must be reachable from the browser)
 
-### Project Overview Generation
-The system can generate structured project summaries combining paper (arXiv) and code repository information:
-- **Quick Overview**: Generated after project creation using README + arXiv abstract. Fast (~seconds), provides project introduction, core innovations, technical architecture, and key features.
-- **Full Overview**: Generated after completing the 4-step pipeline (ingest → index → align → vectors). Uses full paper content + code symbols for detailed analysis including implementation details and component breakdown.
-- **UI**: Overview is displayed in a separate tab alongside the chat interface, with streaming generation support.
-
-### Code Snippet Display in Q&A
-When asking questions about code implementation:
-- The system retrieves exact code references (file path + line numbers) without LLM rewriting
-- Raw code snippets are fetched directly from the cloned repository and displayed with line numbers
-- Users can view the full file in a modal viewer with the relevant lines highlighted
-- This preserves accurate implementation details that would be lost if passed through LLM text generation
-- Backend endpoints:
-  - `GET /projects/{id}/code/file?path=...` - Full file content
-  - `GET /projects/{id}/code/snippet?path=...&start_line=...&end_line=...` - Specific line range
-
-### Streaming Responses
-Both Q&A and Overview generation use Server-Sent Events (SSE) for real-time streaming:
-- `/projects/{id}/ask-stream` - Stream LLM answers token-by-token
-- `/projects/{id}/overview/generate-quick` and `/overview/generate-full` - Stream overview generation
-- Frontend displays partial content immediately rather than waiting for complete responses
-
-### UI Layout
-Two-column design:
-- **Left Sidebar**: Create project button, collapsible usage guide, collapsible project list (with per-project delete), conditional project detail panel (appears only when project selected), export button
-- **Center**: Tabbed interface switching between Chat and Overview
-
-## Code style and conventions
+## Code Style / Conventions
 
 ### General
 
-- Do not treat `projects/`, `backend/app.db`, `backend/.venv`, or `frontend/node_modules/` as source-of-truth.
-- Prefer small, focused diffs; avoid refactors while fixing bugs.
-- Keep JSON outputs stable: this repo typically writes JSON with `indent=2` and `ensure_ascii=True`.
+- Prefer small, focused diffs; avoid opportunistic refactors while fixing bugs.
+- Do not treat `projects/`, `backend/app.db`, `backend/.venv/`, `frontend/node_modules/` as source-of-truth.
+- Keep JSON output stable: use `indent=2` and `ensure_ascii=True` unless the file already differs.
 
 ### Python (backend)
 
 Imports:
-
-- Group imports as: stdlib, third-party, local (relative) imports.
-- Local imports typically use explicit relative form, e.g. `from .config import ...`.
+- Group imports: stdlib → third-party → local (relative) imports.
+- Prefer explicit relative imports: `from .config import ...`.
 
 Typing:
-
-- The codebase is mixed (both `typing.List`/`Dict` and `list[...]`/`dict[...]` exist).
-- For new code, prefer Python 3.10+ style (`list[...]`, `dict[...]`, `X | None`) unless editing a file that already uses the older style.
-- Avoid weakening types to `object`/`Any` unless you are genuinely dealing with unstructured JSON.
+- Prefer Python 3.10+ style (`list[...]`, `dict[...]`, `X | None`) when adding new code.
+- Avoid `Any` unless handling unstructured JSON; keep boundaries narrow.
 
 FastAPI patterns:
+- Raise `HTTPException(status_code=..., detail=...)` for client-visible errors.
+- Map external failures precisely (e.g. `requests.RequestException` → 502).
+- Ensure resources are closed (`try/finally`) for sqlite/files.
 
-- Raise `fastapi.HTTPException(status_code=..., detail=...)` for client-visible errors.
-- Catch and map external failures precisely (e.g. `requests.RequestException` -> 502).
-- Ensure resources are closed with `try/finally` (e.g. SQLite connections).
-
-Error handling:
-
-- Prefer narrow exceptions; if cleanup is required, cleanup then re-raise.
-- Avoid silent failures; if you must ignore an exception (e.g. best-effort delete), keep the scope minimal.
-
-I/O and encoding:
-
-- Use explicit UTF-8 when reading/writing text (`encoding="utf-8"`).
-- When reading potentially binary/large files, follow `backend/app/code_ingest.py` style (`_safe_read_text`).
+I/O:
+- Always specify `encoding="utf-8"`.
+- For large/binary reads, follow `backend/app/code_ingest.py` safe-read patterns.
 
 Shelling out:
-
-- `backend/app/code_ingest.py` uses `subprocess.run(..., check=True)` and interacts with `git`.
-- Be careful with destructive git operations on cloned repos (it does `reset --hard origin/HEAD`).
+- Be careful with destructive git operations used for cloned repos (reset/clean).
 
 ### TypeScript / React (frontend)
 
 Type checking:
-
-- `frontend/tsconfig.json` is `strict: true` and builds run `tsc -b`.
-- Prefer types that survive strict mode; avoid implicit `any`.
+- `strict: true`; keep types explicit and avoid implicit `any`.
 
 Imports:
-
-- Keep external imports first, then relative local imports.
+- External imports first, then local.
 
 API layer:
+- Use relative `/projects/...` by default (works with Vite proxy + port forwarding).
+- Backend JSON uses snake_case fields (`paper_url`, `repo_url`).
+- On errors, prefer surfacing backend `detail` when present.
 
-- `frontend/src/api.ts` wraps `fetch` and throws on non-2xx responses.
-- API payload fields are snake_case to match backend JSON (e.g. `paper_url`, `repo_url`).
-
-Component patterns:
-
+Components:
 - Prefer functional components.
-- Handle async errors explicitly (`try/catch` with `err instanceof Error` checks).
-- Keep UI state minimal and derived values computed via `useMemo` when needed.
+- Handle async errors explicitly (`try/catch`, `err instanceof Error`).
+- Keep state minimal; compute derived state via `useMemo` when needed.
 
-## Cursor / Copilot instructions
+## Cursor / Copilot Instructions
 
-No Cursor rules found (`.cursor/rules/` or `.cursorrules`).
-No Copilot instructions found (`.github/copilot-instructions.md`).
-
-If you add those later, mirror them here (or link to them) so agentic tools follow the same constraints.
+- No Cursor rules found (`.cursor/rules/` or `.cursorrules`).
+- No Copilot instructions found (`.github/copilot-instructions.md`).

@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import Iterable, List
+from typing import Iterable, List, Mapping
 
 from .config import PROJECTS_DIR
 
@@ -8,6 +8,7 @@ from .config import PROJECTS_DIR
 def ensure_project_dirs(project_id: str) -> Path:
     project_dir = PROJECTS_DIR / project_id
     (project_dir / "paper").mkdir(parents=True, exist_ok=True)
+    (project_dir / "docs").mkdir(parents=True, exist_ok=True)
     (project_dir / "code").mkdir(parents=True, exist_ok=True)
     (project_dir / "alignment").mkdir(parents=True, exist_ok=True)
     (project_dir / "qa").mkdir(parents=True, exist_ok=True)
@@ -15,7 +16,7 @@ def ensure_project_dirs(project_id: str) -> Path:
     return project_dir
 
 
-def write_project_meta(project_id: str, meta: dict) -> None:
+def write_project_meta(project_id: str, meta: Mapping[str, object]) -> None:
     project_dir = ensure_project_dirs(project_id)
     meta_path = project_dir / "project.json"
     meta_path.write_text(json.dumps(meta, ensure_ascii=True, indent=2))
@@ -39,7 +40,7 @@ def append_project_summary(project_id: str, lines: Iterable[str]) -> None:
         handle.write("\n")
 
 
-def append_qa_log(project_id: str, entry: dict) -> None:
+def append_qa_log(project_id: str, entry: Mapping[str, object]) -> None:
     log_path = PROJECTS_DIR / project_id / "qa" / "qa_log.jsonl"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("a", encoding="utf-8") as handle:
@@ -47,7 +48,7 @@ def append_qa_log(project_id: str, entry: dict) -> None:
         handle.write("\n")
 
 
-def read_qa_log(project_id: str) -> List[dict]:
+def read_qa_log(project_id: str) -> List[dict[str, object]]:
     log_path = PROJECTS_DIR / project_id / "qa" / "qa_log.jsonl"
     if not log_path.exists():
         return []
@@ -61,7 +62,7 @@ def read_qa_log(project_id: str) -> List[dict]:
     return entries
 
 
-def read_project_overview(project_id: str) -> dict | None:
+def read_project_overview(project_id: str) -> dict[str, object] | None:
     overview_path = PROJECTS_DIR / project_id / "summary" / "overview.json"
     if not overview_path.exists():
         return None
